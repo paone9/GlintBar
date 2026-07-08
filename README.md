@@ -19,6 +19,7 @@ session **min / max / avg**:
 | VRAM | nvidia-smi | red >95 % |
 | GPU Power | nvidia-smi | sudden dropouts under load |
 | GPU Clock | nvidia-smi | collapse to idle mid-load = a TDR hang |
+| SYS Temp | ACPI thermal zone | red >97 °C |
 | CPU | psutil | red >95 % |
 | RAM | psutil | red >95 % |
 | Network | psutil | MB/s in+out |
@@ -43,6 +44,14 @@ The bar only shows the tiles your machine actually supports (see below).
 
 AMD/Intel machines get **GPU load** (temp/clock/power/VRAM need NVIDIA). The
 settings panel greys out any tile your hardware can't provide.
+
+**Temperatures & fans.** The **SYS Temp** tile reads the ACPI thermal zone via a
+Windows performance counter — no admin, but it's a *generic* zone (a useful
+system-heat proxy), not the exact CPU-package sensor, and some machines block it.
+**True per-core CPU temperature and fan RPM aren't reachable without kernel-level
+access** — they need a helper like [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+running (with admin). An optional LibreHardwareMonitor integration is on the
+[roadmap](ROADMAP.md).
 
 **Requirements:** Python 3.8+, `pip install -r requirements.txt`
 (`pywebview`, `psutil`), and the WebView2 runtime (preinstalled on Windows 11).

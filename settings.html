@@ -65,10 +65,11 @@
 <script>
 const LABELS = {
   gpu_temp:"GPU Temp", gpu_util:"GPU Load", gpu_mem_pct:"VRAM", gpu_power:"GPU Power",
-  gpu_clock:"GPU Clock", cpu:"CPU", ram_pct:"RAM", net_mbps:"Network", disk_mbps:"Disk",
+  gpu_clock:"GPU Clock", sys_temp:"System Temp", cpu:"CPU", ram_pct:"RAM",
+  net_mbps:"Network", disk_mbps:"Disk",
 };
 const PICKS = {
-  essentials:["gpu_temp","cpu","ram_pct","disk_mbps"],
+  essentials:["gpu_temp","sys_temp","cpu","ram_pct","disk_mbps"],
   gpu:["gpu_temp","gpu_util","gpu_mem_pct","gpu_power","gpu_clock"],
   all:Object.keys(LABELS),
 };

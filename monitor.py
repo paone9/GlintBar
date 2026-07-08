@@ -39,7 +39,7 @@ HISTORY_LEN = 60             # sparkline window (seconds)
 
 METRIC_IDS = [
     "gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock",
-    "cpu", "ram_pct", "net_mbps", "disk_mbps",
+    "sys_temp", "cpu", "ram_pct", "net_mbps", "disk_mbps",
 ]
 BASE_METRICS = ["cpu", "ram_pct", "net_mbps", "disk_mbps"]   # always available (psutil)
 _NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -90,59 +90,101 @@ class _PDH_ITEM(ctypes.Structure):
     _fields_ = [("szName", wt.LPWSTR), ("FmtValue", _PDH_VAL)]
 
 
-class PdhGpuProvider:
-    """Cross-vendor GPU utilization via Windows performance counters."""
-    kind = "generic"
-    metrics = ["gpu_util"]
-    _MORE, _DBL = 0x800007D2, 0x00000200
+_PDH_MORE, _PDH_DBL = 0x800007D2, 0x00000200
+_PDH = None
 
-    def __init__(self):
+
+def _pdh_lib():
+    global _PDH
+    if _PDH is None:
+        p = ctypes.windll.pdh
+        for fn in ("PdhOpenQueryW", "PdhAddEnglishCounterW",
+                   "PdhCollectQueryData", "PdhGetFormattedCounterArrayW"):
+            getattr(p, fn).restype = ctypes.c_uint32   # PDH_STATUS is unsigned
+        _PDH = p
+    return _PDH
+
+
+def _pdh_values(p, counter):
+    """Return [(instanceName, value), ...] for a wildcard PDH counter, or None."""
+    for _ in range(5):
+        size, count = wt.DWORD(0), wt.DWORD(0)
+        if p.PdhGetFormattedCounterArrayW(counter, _PDH_DBL, ctypes.byref(size),
+                                          ctypes.byref(count), None) != _PDH_MORE:
+            return None
+        buf = (ctypes.c_byte * (size.value + 8192))()   # margin for volatile counts
+        size = wt.DWORD(size.value + 8192)
+        if p.PdhGetFormattedCounterArrayW(counter, _PDH_DBL, ctypes.byref(size),
+                                          ctypes.byref(count), buf) == 0:
+            items = ctypes.cast(buf, ctypes.POINTER(_PDH_ITEM))
+            return [(items[i].szName or "", items[i].FmtValue.doubleValue)
+                    for i in range(count.value)]
+    return None
+
+
+class _PdhCounter:
+    """A single persistent PDH wildcard counter query (no admin needed)."""
+    def __init__(self, path):
         self.ok = False
         try:
-            p = ctypes.windll.pdh
-            for fn in ("PdhOpenQueryW", "PdhAddEnglishCounterW",
-                       "PdhCollectQueryData", "PdhGetFormattedCounterArrayW"):
-                getattr(p, fn).restype = ctypes.c_uint32   # PDH_STATUS is unsigned
-            self.p = p
+            self.p = _pdh_lib()
             self.q = wt.HANDLE()
-            if p.PdhOpenQueryW(None, 0, ctypes.byref(self.q)) != 0:
+            if self.p.PdhOpenQueryW(None, 0, ctypes.byref(self.q)) != 0:
                 return
-            self.c_util = wt.HANDLE()
-            if p.PdhAddEnglishCounterW(self.q, r"\GPU Engine(*)\Utilization Percentage",
-                                       0, ctypes.byref(self.c_util)) != 0:
+            self.c = wt.HANDLE()
+            if self.p.PdhAddEnglishCounterW(self.q, path, 0, ctypes.byref(self.c)) != 0:
                 return
-            p.PdhCollectQueryData(self.q)   # baseline for the first delta
+            self.p.PdhCollectQueryData(self.q)   # baseline
             self.ok = True
         except Exception:
             self.ok = False
 
-    def _sum(self, counter, key):
-        p = self.p
-        for _ in range(5):
-            size, count = wt.DWORD(0), wt.DWORD(0)
-            if p.PdhGetFormattedCounterArrayW(counter, self._DBL, ctypes.byref(size),
-                                              ctypes.byref(count), None) != self._MORE:
-                return None
-            buf = (ctypes.c_byte * (size.value + 8192))()
-            size = wt.DWORD(size.value + 8192)
-            if p.PdhGetFormattedCounterArrayW(counter, self._DBL, ctypes.byref(size),
-                                              ctypes.byref(count), buf) == 0:
-                items = ctypes.cast(buf, ctypes.POINTER(_PDH_ITEM))
-                tot = 0.0
-                for i in range(count.value):
-                    it = items[i]
-                    if key is None or key in (it.szName or ""):
-                        tot += it.FmtValue.doubleValue
-                return tot
-        return None
+    def values(self):
+        self.p.PdhCollectQueryData(self.q)
+        return _pdh_values(self.p, self.c)
+
+
+class PdhGpuProvider:
+    """Cross-vendor GPU utilization via Windows performance counters."""
+    kind = "generic"
+    metrics = ["gpu_util"]
+
+    def __init__(self):
+        self._c = _PdhCounter(r"\GPU Engine(*)\Utilization Percentage")
+        self.ok = self._c.ok
 
     def sample(self):
         if not self.ok:
             return {}
         try:
-            self.p.PdhCollectQueryData(self.q)
-            util = self._sum(self.c_util, "engtype_3D")
-            return {} if util is None else {"gpu_util": min(util, 100.0)}
+            vals = self._c.values()
+            if vals is None:
+                return {}
+            util = sum(v for n, v in vals if "engtype_3D" in n)
+            return {"gpu_util": min(util, 100.0)}
+        except Exception:
+            return {}
+
+
+class ThermalProvider:
+    """System temperature from the ACPI thermal zone (no admin). A generic zone,
+    not the exact CPU package sensor — for that, use LibreHardwareMonitor."""
+    metrics = ["sys_temp"]
+
+    def __init__(self):
+        self._c = _PdhCounter(r"\Thermal Zone Information(*)\Temperature")
+        self.ok = self._c.ok
+        if self.ok:                      # confirm it yields a plausible reading
+            v = self.sample().get("sys_temp")
+            self.ok = v is not None and 0 < v < 150
+
+    def sample(self):
+        try:
+            vals = self._c.values()
+            if not vals:
+                return {}
+            temps = [k - 273.15 for _, k in vals if 200 < k < 500]   # Kelvin -> C
+            return {"sys_temp": round(max(temps), 1)} if temps else {}
         except Exception:
             return {}
 
@@ -159,7 +201,10 @@ def _detect_gpu():
 GPU = _detect_gpu()
 GPU_KIND = GPU.kind if GPU else "none"
 GPU_METRICS = GPU.metrics if GPU else []
-AVAILABLE = [m for m in METRIC_IDS if m in BASE_METRICS or m in GPU_METRICS]
+THERMAL = ThermalProvider()
+THERMAL_METRICS = THERMAL.metrics if THERMAL.ok else []
+AVAILABLE = [m for m in METRIC_IDS
+             if m in BASE_METRICS or m in GPU_METRICS or m in THERMAL_METRICS]
 
 CONFIG_PATH = os.path.join(HERE, "config.json")
 DEFAULT_CONFIG = {
@@ -252,6 +297,7 @@ class Collector:
         self._t = now
 
         gpu = GPU.sample() if GPU else {}
+        therm = THERMAL.sample() if THERMAL.ok else {}
 
         cpu = psutil.cpu_percent(interval=None)
         vm = psutil.virtual_memory()
@@ -272,6 +318,7 @@ class Collector:
             "gpu_mem_pct": gpu.get("gpu_mem_pct"),
             "gpu_power": gpu.get("gpu_power"),
             "gpu_clock": gpu.get("gpu_clock"),
+            "sys_temp": therm.get("sys_temp"),
             "cpu": cpu,
             "ram_pct": vm.percent,
             "net_mbps": max(net_mbps, 0.0),
