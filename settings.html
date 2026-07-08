@@ -1,0 +1,140 @@
+<meta charset="utf-8">
+<style>
+  :root{ --bg:#12161c; --panel:#1b212b; --line:#2b3542; --text:#e6edf3;
+         --dim:#8b98a5; --accent:#58a6ff; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ background:var(--bg); color:var(--text);
+        font:13px/1.4 "Segoe UI",system-ui,sans-serif; padding:14px; }
+  h1{ font-size:14px; font-weight:600; margin-bottom:2px; }
+  .sub{ color:var(--dim); font-size:11px; margin-bottom:12px; }
+  .group{ margin-bottom:14px; }
+  .group > .lbl{ font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+        color:var(--dim); margin-bottom:6px; }
+  .metrics{ display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; }
+  label.row{ display:flex; align-items:center; gap:7px; padding:3px 4px;
+        border-radius:4px; cursor:pointer; }
+  label.row:hover{ background:#ffffff0e; }
+  input[type=checkbox]{ accent-color:var(--accent); width:14px; height:14px; }
+  .seg{ display:flex; gap:6px; flex-wrap:wrap; }
+  .seg button{ background:var(--panel); color:var(--text); border:1px solid var(--line);
+        border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; }
+  .seg button.on{ border-color:var(--accent); color:var(--accent); background:#58a6ff1a; }
+  .pick{ background:transparent; color:var(--accent); border:none; font-size:11px;
+        cursor:pointer; padding:0; }
+  .actions{ display:flex; gap:8px; margin-top:6px; }
+  .actions button{ flex:1; padding:8px; border-radius:6px; font-size:13px; cursor:pointer;
+        border:1px solid var(--line); background:var(--panel); color:var(--text); }
+  .actions .save{ background:var(--accent); border-color:var(--accent); color:#06101f;
+        font-weight:600; }
+</style>
+
+<h1>Bar settings</h1>
+<div class="sub">Choose what to show, the size, and where it sits.</div>
+
+<div class="group">
+  <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">
+    <span>Metrics (top picks)</span>
+    <span><button class="pick" data-pick="essentials">Essentials</button> ·
+          <button class="pick" data-pick="gpu">GPU focus</button> ·
+          <button class="pick" data-pick="all">All</button></span>
+  </div>
+  <div class="metrics" id="metrics"></div>
+</div>
+
+<div class="group">
+  <div class="lbl">Size</div>
+  <div class="seg" id="size"></div>
+</div>
+
+<div class="group">
+  <div class="lbl">Align in taskbar</div>
+  <div class="seg" id="align"></div>
+</div>
+
+<div class="group">
+  <label class="row"><input type="checkbox" id="sparklines"> Show sparklines</label>
+  <label class="row"><input type="checkbox" id="alerts"> Critical alerts (tile pops in on a breach)</label>
+  <label class="row"><input type="checkbox" id="sound"> Alert sound</label>
+</div>
+
+<div class="actions">
+  <button id="cancel">Cancel</button>
+  <button class="save" id="save">Save</button>
+</div>
+
+<script>
+const LABELS = {
+  gpu_temp:"GPU Temp", gpu_util:"GPU Load", gpu_mem_pct:"VRAM", gpu_power:"GPU Power",
+  gpu_clock:"GPU Clock", cpu:"CPU", ram_pct:"RAM", net_mbps:"Network", disk_mbps:"Disk",
+};
+const PICKS = {
+  essentials:["gpu_temp","cpu","ram_pct","disk_mbps"],
+  gpu:["gpu_temp","gpu_util","gpu_mem_pct","gpu_power","gpu_clock"],
+  all:Object.keys(LABELS),
+};
+let ORDER = Object.keys(LABELS);
+let AVAIL = Object.keys(LABELS);
+let cfg = { metrics:ORDER.slice(), size:"M", align:"right", sparklines:true, alerts:true, sound:true };
+
+function renderMetrics(){
+  const host = document.getElementById("metrics"); host.innerHTML="";
+  for (const id of ORDER){
+    const avail = AVAIL.includes(id);
+    const on = avail && cfg.metrics.includes(id);
+    const l = document.createElement("label"); l.className="row";
+    if (!avail){ l.style.opacity=".4"; l.title="Not available on this GPU"; }
+    l.innerHTML = `<input type="checkbox" ${on?"checked":""} ${avail?"":"disabled"} data-id="${id}"> ${LABELS[id]}`;
+    if (avail) l.querySelector("input").onchange = (e)=>{
+      const mid=e.target.dataset.id;
+      if (e.target.checked){ if(!cfg.metrics.includes(mid)) cfg.metrics.push(mid); }
+      else cfg.metrics = cfg.metrics.filter(x=>x!==mid);
+      cfg.metrics = ORDER.filter(x=>cfg.metrics.includes(x));   // canonical order
+    };
+    host.appendChild(l);
+  }
+}
+function renderSeg(hostId, opts, key){
+  const host=document.getElementById(hostId); host.innerHTML="";
+  for (const [val,txt] of opts){
+    const b=document.createElement("button"); b.textContent=txt;
+    if (cfg[key]===val) b.classList.add("on");
+    b.onclick=()=>{ cfg[key]=val; renderSeg(hostId,opts,key); };
+    host.appendChild(b);
+  }
+}
+function renderAll(){
+  renderMetrics();
+  renderSeg("size",[["S","Compact"],["M","Normal"],["L","Large"]],"size");
+  renderSeg("align",[["left","Left"],["center","Center"],["right","Right"]],"align");
+  document.getElementById("sparklines").checked = !!cfg.sparklines;
+  document.getElementById("alerts").checked = cfg.alerts !== false;
+  document.getElementById("sound").checked = cfg.sound !== false;
+}
+
+document.querySelectorAll(".pick").forEach(b=>{
+  b.onclick=()=>{ cfg.metrics = ORDER.filter(x=>PICKS[b.dataset.pick].includes(x) && AVAIL.includes(x)); renderMetrics(); };
+});
+document.getElementById("sparklines").onchange = (e)=>{ cfg.sparklines=e.target.checked; };
+document.getElementById("alerts").onchange = (e)=>{ cfg.alerts=e.target.checked; };
+document.getElementById("sound").onchange = (e)=>{ cfg.sound=e.target.checked; };
+document.getElementById("cancel").onclick = ()=> window.pywebview.api.cancel();
+document.getElementById("save").onclick = ()=>{
+  if (!cfg.metrics.length) cfg.metrics = ORDER.slice();
+  window.pywebview.api.save_config(cfg);
+};
+
+renderAll();   // show immediately with defaults
+
+async function loadConfig(){
+  try{
+    const r = await window.pywebview.api.get_config();
+    if (r && r.metric_ids) ORDER = r.metric_ids;
+    if (r && r.available) AVAIL = r.available;
+    if (r && r.config) cfg = Object.assign(cfg, r.config);
+    cfg.metrics = ORDER.filter(x=>cfg.metrics.includes(x) && AVAIL.includes(x));
+    renderAll();
+  }catch(e){}
+}
+if (window.pywebview) loadConfig();
+window.addEventListener("pywebviewready", loadConfig);
+</script>

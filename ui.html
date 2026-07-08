@@ -1,0 +1,203 @@
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#1e1f22; --line:#33353a; --text:#e6edf3; --dim:#9aa4af;
+    --ok:#58a6ff; --warn:#d29922; --crit:#f85149;
+    --valsize:13px; --lblsize:9px; --pad:9px; --cw:40px; --ch:16px;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{ background:var(--bg); color:var(--text);
+        font:12px/1 "Segoe UI",system-ui,sans-serif; user-select:none; overflow:hidden; }
+  body.size-S{ --valsize:12px; --lblsize:8px; --pad:6px; --cw:30px; --ch:14px; }
+  body.size-L{ --valsize:16px; --lblsize:10px; --pad:12px; --cw:54px; --ch:20px; }
+  #bar{ display:flex; align-items:center; justify-content:flex-start;
+        height:100vh; padding:0 2px; }
+  #grip{ flex:0 0 auto; color:var(--dim); font-size:11px; padding:0 5px;
+         cursor:move; letter-spacing:-1px; }
+  body.embedded #grip{ display:none; }
+  #chips{ flex:0 0 auto; display:flex; align-items:center; min-width:0; }
+  body:not(.embedded) #chips{ flex:1 1 auto; }
+  body:not(.embedded) .chip{ flex:1 1 0; }
+  .chip{ flex:0 0 auto; display:flex; align-items:center; gap:5px;
+         padding:0 var(--pad); height:100%; white-space:nowrap;
+         border-right:1px solid var(--line); }
+  .chip .lbl{ font-size:var(--lblsize); letter-spacing:.05em; text-transform:uppercase;
+              color:var(--dim); }
+  .chip .val{ font-size:var(--valsize); font-weight:600; font-variant-numeric:tabular-nums; }
+  .chip .u{ font-size:var(--lblsize); color:var(--dim); font-weight:400; margin-left:-2px; }
+  .chip canvas{ width:var(--cw); height:var(--ch); opacity:.7; }
+  body.nospark .chip canvas{ display:none; }
+  .val.ok{ color:var(--text); } .val.warn{ color:var(--warn); } .val.crit{ color:var(--crit); }
+  #alerts{ flex:0 0 auto; display:flex; align-items:center; }
+  .chip.alert{ background:#f8514922; border-right:1px solid var(--line);
+    box-shadow:inset 2px 0 0 var(--crit); animation:alertpulse 1.4s ease-in-out infinite; }
+  .chip.alert .ic{ color:var(--crit); font-size:12px; }
+  @keyframes alertpulse{ 0%,100%{ background:#f8514922; } 50%{ background:#f8514936; } }
+  #ctl{ flex:0 0 auto; display:flex; align-items:center; gap:2px; padding:0 4px 0 6px; }
+  #ctl button{ background:transparent; color:var(--dim); border:none; font-size:12px;
+               cursor:pointer; padding:3px 5px; border-radius:3px; line-height:1; }
+  #ctl button:hover{ color:var(--text); background:#ffffff14; }
+  #ctl #logBtn.rec{ color:var(--crit); }
+</style>
+
+<div id="bar">
+  <div id="grip" class="pywebview-drag-region" title="Drag to move">⋮⋮</div>
+  <div id="chips"></div>
+  <div id="alerts"></div>
+  <div id="ctl">
+    <button id="setBtn"  title="Settings">⚙</button>
+    <button id="logBtn"  title="Toggle CSV logging">●</button>
+    <button id="logsBtn" title="Open logs folder">▤</button>
+    <button id="closeBtn" title="Close">✕</button>
+  </div>
+</div>
+
+<script>
+const META = {
+  gpu_temp:{lbl:"GPU",unit:"°",warn:80,crit:87,max:100},
+  gpu_util:{lbl:"Load",unit:"%",warn:1e9,crit:1e9,max:100},
+  gpu_mem_pct:{lbl:"VRAM",unit:"%",warn:85,crit:95,max:100},
+  gpu_power:{lbl:"Pwr",unit:"W",warn:1e9,crit:1e9,max:130},
+  gpu_clock:{lbl:"Clk",unit:"",warn:1e9,crit:1e9,max:2200,unitTxt:"MHz"},
+  cpu:{lbl:"CPU",unit:"%",warn:85,crit:95,max:100},
+  ram_pct:{lbl:"RAM",unit:"%",warn:85,crit:95,max:100},
+  net_mbps:{lbl:"Net",unit:"",warn:1e9,crit:1e9,max:50,dyn:true,unitTxt:"MB/s"},
+  disk_mbps:{lbl:"Disk",unit:"",warn:1e9,crit:1e9,max:200,dyn:true,unitTxt:"MB/s"},
+};
+
+const chipsEl = document.getElementById("chips");
+let nodes = {}, shownIds = [], lastCfgV = -1, sizePending = false;
+let hideTimer = null, AVAIL = Object.keys(META);
+
+function onChipEnter(id, el){
+  clearTimeout(hideTimer);
+  const r = el.getBoundingClientRect();
+  const center = r.left + r.width / 2;   // CSS px from the bar window's left edge
+  try{ window.pywebview.api.show_detail(id, center); }catch(e){}
+}
+function onChipLeave(){
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(()=>{ try{ window.pywebview.api.hide_detail(); }catch(e){} }, 130);
+}
+
+function buildChips(cfg){
+  chipsEl.innerHTML = ""; nodes = {};
+  shownIds = cfg.metrics.filter(id => AVAIL.includes(id));
+  document.body.classList.toggle("size-S", cfg.size==="S");
+  document.body.classList.toggle("size-L", cfg.size==="L");
+  document.body.classList.toggle("nospark", !cfg.sparklines);
+  for (const id of shownIds){
+    const m = META[id]; if(!m) continue;
+    const c = document.createElement("div"); c.className="chip"; c.id="chip_"+id;
+    c.innerHTML = `<span class="lbl">${m.lbl}</span>`+
+      `<span class="val ok" id="v_${id}">--</span>`+
+      (m.unit?`<span class="u">${m.unit}</span>`:``)+
+      `<canvas id="c_${id}" width="120" height="44"></canvas>`;
+    chipsEl.appendChild(c);
+    c.addEventListener("mouseenter", ()=> onChipEnter(id, c));
+    c.addEventListener("mouseleave", onChipLeave);
+    nodes[id] = {chip:c, val:c.querySelector(`#v_${id}`), cv:c.querySelector(`#c_${id}`)};
+  }
+  sizePending = true;
+}
+
+function cls(m,v){ if(v==null)return"ok"; if(v>=m.crit)return"crit"; if(v>=m.warn)return"warn"; return"ok"; }
+function fmt(v,id){ if(v==null)return"--";
+  if(id==="net_mbps"||id==="disk_mbps"||id==="gpu_power")return v.toFixed(1); return Math.round(v); }
+function gv(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function color(c){ return c==="crit"?gv("--crit"):c==="warn"?gv("--warn"):gv("--ok"); }
+
+function spark(cv,data,m,colr){
+  const ctx=cv.getContext("2d"), w=cv.width, h=cv.height; ctx.clearRect(0,0,w,h);
+  if(!data.length) return;
+  let top=m.dyn?Math.max(...data,1)*1.15:m.max;
+  const n=data.length, sx=w/Math.max(n-1,1);
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const y=h-(Math.min((v==null?0:v),top)/top)*(h-4)-2; const x=i*sx;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+  ctx.strokeStyle=colr; ctx.lineWidth=2.5; ctx.stroke();
+  ctx.lineTo((n-1)*sx,h); ctx.lineTo(0,h); ctx.closePath(); ctx.fillStyle=colr+"22"; ctx.fill();
+}
+
+function neededWidthCss(){
+  const r = document.getElementById("ctl").getBoundingClientRect();
+  return Math.ceil(r.right) + 3;
+}
+
+const alertsEl = document.getElementById("alerts");
+const CRIT = {}; for (const id in META) if (META[id].crit < 1e8) CRIT[id] = META[id].crit;
+let alertState = {}, alertKey = "";
+
+// Additive critical alert: a tile appears only on a sustained critical breach,
+// stays through a hysteresis/cooldown, and never displaces your chosen tiles.
+function updateAlerts(st){
+  if (st.config.alerts === false){
+    if (alertsEl.childElementCount){ alertsEl.innerHTML=""; alertKey=""; sizePending=true; }
+    alertState = {};
+    return;
+  }
+  const soundOn = st.config.sound !== false;
+  const active = [];
+  for (const id of AVAIL){
+    const crit = CRIT[id]; if (crit == null) continue;
+    const v = st.latest[id]; if (v == null) continue;
+    let s = alertState[id] || {on:false, ec:0, cc:0};
+    if (!s.on){
+      if (v >= crit){ if (++s.ec >= 2){ s.on = true; s.cc = 0;   // 2s sustained to enter
+        if (soundOn){ try{ window.pywebview.api.beep(); }catch(e){} } } }
+      else s.ec = 0;
+    } else {
+      if (v < crit * 0.97){ if (++s.cc >= 8) { s.on = false; s.ec = 0; } }  // 8s below to clear
+      else s.cc = 0;
+    }
+    alertState[id] = s;
+    if (s.on) active.push(id);
+  }
+  const key = active.join(",");
+  if (key !== alertKey){
+    alertsEl.innerHTML = "";
+    for (const id of active){
+      const m = META[id];
+      const el = document.createElement("div"); el.className = "chip alert";
+      el.innerHTML = `<span class="ic">⚠</span><span class="lbl">${m.lbl}</span>`+
+        `<span class="val crit" id="av_${id}">${fmt(st.latest[id],id)}</span>`+
+        (m.unit ? `<span class="u">${m.unit}</span>` : ``);
+      alertsEl.appendChild(el);
+    }
+    alertKey = key; sizePending = true;
+  } else {
+    for (const id of active){ const e=document.getElementById("av_"+id); if(e) e.textContent=fmt(st.latest[id],id); }
+  }
+}
+
+async function tick(){
+  let st; try{ st = await window.pywebview.api.get_state(); }catch(e){ return; }
+  document.body.classList.toggle("embedded", !!st.embedded);
+  if (st.available) AVAIL = st.available;
+  if (st.cfgv !== lastCfgV){ buildChips(st.config); lastCfgV = st.cfgv; }
+  for (const id of shownIds){
+    const m=META[id], v=st.latest[id], c=cls(m,v), N=nodes[id]; if(!N) continue;
+    N.val.className="val "+c; N.val.textContent=fmt(v,id);
+    if(st.config.sparklines) spark(N.cv, st.hist[id]||[], m, color(c));
+  }
+  updateAlerts(st);
+  const b=document.getElementById("logBtn");
+  if(st.logging){ b.classList.add("rec"); b.title="Logging → "+(st.logfile||"")+" (click to stop)"; }
+  else { b.classList.remove("rec"); b.title="Toggle CSV logging"; }
+  // auto-fit the embedded bar to its content width
+  if(sizePending && st.embedded){
+    requestAnimationFrame(async ()=>{
+      const ok = await window.pywebview.api.request_size(neededWidthCss());
+      if(ok) sizePending=false;
+    });
+  }
+}
+
+document.getElementById("setBtn").onclick   = ()=> window.pywebview.api.open_settings();
+document.getElementById("logBtn").onclick   = ()=> window.pywebview.api.toggle_log();
+document.getElementById("logsBtn").onclick  = ()=> window.pywebview.api.open_logs();
+document.getElementById("closeBtn").onclick = ()=> window.pywebview.api.close();
+
+window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 1000); });
+</script>
