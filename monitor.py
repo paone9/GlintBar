@@ -1,5 +1,5 @@
 """
-glintbar - a slim, always-on-top hardware monitor that lives in the taskbar gap.
+GlintBar - a slim, always-on-top hardware monitor that lives in the taskbar gap.
 
 Data sources (all first-party / open-source, no admin needed):
   - GPU (NVIDIA)      : nvidia-smi  -> temp, util, VRAM, power, clock
