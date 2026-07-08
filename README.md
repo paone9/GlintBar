@@ -1,5 +1,9 @@
 # GlintBar
 
+[![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A slim, always-on-top hardware monitor that lives in the **empty space of your
 Windows taskbar** (or docked at the top/bottom). It shows live CPU, RAM, GPU,
 disk and network at a glance, and surfaces trouble — thermal / clock / power
@@ -131,6 +135,17 @@ df.set_index("timestamp")[["gpu_temp", "gpu_clock", "gpu_power"]].plot()
 - Metric thresholds live in the `META` map at the top of `ui.html` — tweak freely.
 - Deferred ideas (attention rotation, anomaly detection, toast notifications,
   AMD/Intel temperatures) are captured in [ROADMAP.md](ROADMAP.md).
+
+## Security & trust
+
+GlintBar is designed to be easy to approve: **plain auditable Python, no binaries,
+no obfuscation, no admin, and no network access whatsoever** (no telemetry, no
+update checks — it runs fully offline). It only *reads* system metrics and writes
+`config.json`/`logs` inside its own folder.
+
+Every push is scanned by `ruff` (lint), `bandit` (Python security scanner), and
+CodeQL (semantic analysis) — see the badges above and the **Actions**/**Security**
+tabs. Full details of exactly what it accesses are in [SECURITY.md](SECURITY.md).
 
 ## License
 

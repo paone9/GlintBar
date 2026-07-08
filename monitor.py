@@ -38,8 +38,10 @@ SAMPLE_INTERVAL = 1.0        # seconds
 HISTORY_LEN = 60             # sparkline window (seconds)
 
 METRIC_IDS = [
-    "gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock",
-    "sys_temp", "cpu", "ram_pct", "net_mbps", "disk_mbps",
+    # grouped for readability: system vitals -> GPU cluster -> I/O
+    "cpu", "ram_pct", "sys_temp",
+    "gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_clock", "gpu_power",
+    "disk_mbps", "net_mbps",
 ]
 BASE_METRICS = ["cpu", "ram_pct", "net_mbps", "disk_mbps"]   # always available (psutil)
 _NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -471,8 +473,7 @@ with open(os.path.join(HERE, "detail.html"), encoding="utf-8") as _f:
 
 DOCK = "taskbar"      # "taskbar" (in the empty taskbar area), "bottom", or "top"
 BAR_HEIGHT = 52       # physical px, used for "bottom"/"top" docks
-EMBED = True          # reparent into the taskbar so it's truly part of it
-import ctypes.wintypes as wt
+EMBED = True          # float over the taskbar gap as a topmost window
 
 
 def _win32_setup(user32):
