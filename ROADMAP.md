@@ -8,6 +8,7 @@ work (or contributors) can pick them up.
 - Taskbar-gap floating bar (topmost overlay, owns its input on Win11).
 - Configurable metrics / size / align, hover-to-expand live graph, CSV logging.
 - Cross-vendor GPU: NVIDIA (full) / AMD·Intel (utilization) / none.
+- No-admin **SYS Temp** tile (ACPI thermal zone via perf counter).
 - **Additive critical alert**: a tile pops in on a sustained critical breach
   (2s to enter, hysteresis + 8s cooldown to clear), never displacing your tiles,
   with an optional soft beep. Toggle in ⚙.
@@ -43,11 +44,14 @@ Windows toast (actionable, appears even with the bar hidden) needs either an
 optional dep (`windows-toasts`) or a WinRT/`Shell_NotifyIcon` path. Keep it
 optional to preserve the no-dependency, corp-friendly footprint.
 
-### 5. AMD / Intel GPU temperature & clock
-The Windows perf-counter path gives utilization for any GPU but not temp/clock/
-power. LibreHardwareMonitor (open source) exposes those for AMD/Intel — but needs
-its DLL bundled and usually admin. Offer as an optional provider, documented,
-not default.
+### 5. LibreHardwareMonitor provider — real CPU temps, fans, AMD/Intel GPU
+The no-admin sources cover a lot, but three things need kernel-level access:
+**true per-core CPU package temperature**, **fan RPM**, and **AMD/Intel GPU
+temp/clock/power**. LibreHardwareMonitor (open source) exposes all of these.
+Add an optional provider that reads a running LHM instance via its local web-server
+JSON (`http://localhost:8085/data.json`, zero extra deps — `urllib`), auto-detected
+and hidden when absent. LHM itself runs with admin; GlintBar stays no-admin. The
+current **SYS Temp** tile (ACPI thermal zone) is the no-admin fallback for temp.
 
 ### 6. Multi-monitor & taskbar orientation
 Currently assumes a single primary monitor with a bottom taskbar. Handle
