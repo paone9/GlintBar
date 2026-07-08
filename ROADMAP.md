@@ -1,71 +1,85 @@
-# glintbar — roadmap / deferred ideas
+# GlintBar roadmap
 
-Shipped small-and-solid first (see README). This file captures the richer ideas
-we discussed but intentionally *didn't* build yet, with the reasoning, so future
-work (or contributors) can pick them up.
+This is a running list of ideas that aren't built yet, with the reasoning, so
+they're easy to pick up later. The goal has been to ship a small solid thing
+first (see the README) rather than pile on features.
 
-## Shipped
-- Taskbar-gap floating bar (topmost overlay, owns its input on Win11).
-- Configurable metrics / size / align, hover-to-expand live graph, CSV logging.
-- Cross-vendor GPU: NVIDIA (full) / AMD·Intel (utilization) / none.
-- No-admin **SYS Temp** tile (ACPI thermal zone via perf counter).
-- **Additive critical alert**: a tile pops in on a sustained critical breach
-  (2s to enter, hysteresis + 8s cooldown to clear), never displacing your tiles,
-  with an optional soft beep. Toggle in ⚙.
-- **Placement watcher**: keeps the bar fitted to the taskbar gap and re-asserts
-  topmost as things change (apps open/close, Explorer restart).
+## Done
 
-## Deferred (and why)
+- Bar that floats in the taskbar gap (a topmost window that owns its own input on
+  Windows 11).
+- Configurable metrics, size and alignment, hover-to-expand graph, CSV logging.
+- GPU support across vendors: NVIDIA full, AMD/Intel utilization, or none.
+- SYS Temp tile from the ACPI thermal zone, no admin needed.
+- Additive critical alert: a tile appears on a sustained critical reading (about
+  2s to show, with hysteresis and an 8s cooldown before it clears), without
+  moving your other tiles, plus an optional beep. Toggle in settings.
+- Placement watcher that keeps the bar fitted to the gap and on top as apps open
+  and close or Explorer restarts.
 
-### 1. Attention rotation — "Option B" (pinned + auto slots)
-A few slots that rotate to show whichever *warm* (elevated, sub-critical)
-metric is most noteworthy, with anti-flap: debounced entry, long dwell,
-incumbency bonus, in-place swap. **Deferred** because motion in the taskbar is a
-cognitive tax and colour-coding already draws the eye; the additive critical
-alert covers the high-value case with zero churn. Add only if static+alerts
-proves insufficient in real use.
+## Ideas, not built yet
 
-### 2. Full tier model — "A + B combined"
-Escalation across three zones by severity: **pinned** (static anchors) →
-**auto** (rotating warm metrics) → **alert** (additive critical). One model that
-degrades to today's behaviour (auto-slots = 0) or full rotation (pinned = 0).
-Build on top of #1 once rotation exists.
+### 1. Attention rotation (pinned plus auto slots)
 
-### 3. Anomaly detection (beyond static thresholds)
-Rolling baseline (EWMA / z-score over the 60s window) to catch *sudden* changes,
-not just absolute levels. Key target: **GPU clock collapsing to idle while util
-is high** — the `VIDEO_TDR_FAILURE` signature — and power dropouts. Needs care:
-disk/network are naturally spiky, so tuning to avoid false positives is the hard
-part. Would feed the alert/score engine.
+A few slots that rotate to show whichever elevated-but-not-critical metric is
+most interesting right now, with anti-flap: a delay before a metric can enter, a
+long minimum dwell, a bias toward whatever's already showing, and in-place swaps.
+Held off on this because motion in the taskbar is distracting and the colour
+coding already pulls your eye, and the additive alert already covers the case
+that matters most. Worth doing only if the static bar plus alerts turns out to
+miss things in real use.
 
-### 4. Real toast notifications
-Currently critical events use a sticky tile + `winsound` beep (zero-dep). A true
-Windows toast (actionable, appears even with the bar hidden) needs either an
-optional dep (`windows-toasts`) or a WinRT/`Shell_NotifyIcon` path. Keep it
-optional to preserve the no-dependency, corp-friendly footprint.
+### 2. Full tiered layout (rotation plus alerts)
 
-### 5. LibreHardwareMonitor provider — real CPU temps, fans, AMD/Intel GPU
-The no-admin sources cover a lot, but three things need kernel-level access:
-**true per-core CPU package temperature**, **fan RPM**, and **AMD/Intel GPU
-temp/clock/power**. LibreHardwareMonitor (open source) exposes all of these.
-Add an optional provider that reads a running LHM instance via its local web-server
-JSON (`http://localhost:8085/data.json`, zero extra deps — `urllib`), auto-detected
-and hidden when absent. LHM itself runs with admin; GlintBar stays no-admin. The
-current **SYS Temp** tile (ACPI thermal zone) is the no-admin fallback for temp.
+Metrics move through three zones by severity: pinned anchors that never move,
+auto slots that rotate warm metrics, and additive tiles for critical ones. Set
+auto slots to zero and you get today's behaviour; set pinned to zero and it's
+full rotation. Build this on top of idea 1 once rotation exists.
 
-### 6. Multi-monitor & taskbar orientation
-Currently assumes a single primary monitor with a bottom taskbar. Handle
-top/left/right taskbars and let the user pick which monitor.
+### 3. Anomaly detection
 
-### 7. "Recently surfaced" log
-A small timestamped history of what alerted/surfaced, so short-lived events can
-be reviewed. Partly covered by the CSV log today.
+A rolling baseline (EWMA or a z-score over the 60-second window) to catch sudden
+changes rather than just absolute levels. The main target is a GPU clock
+collapsing to idle while utilization is high, which is the fingerprint of a
+`VIDEO_TDR_FAILURE`, plus power dropouts. The tricky part is disk and network,
+which are naturally spiky, so avoiding false alarms takes some tuning. This would
+feed the alert logic.
 
-### 8. Cross-platform
-Windows-only today (Win32 + taskbar embedding). macOS/Linux would need different
-placement strategies and metric providers — a large effort, likely a separate
-front end over the same collector.
+### 4. Toast notifications
 
-## Project
-- Source-first distribution (no `.exe`): corporate environments block unsigned
-  binaries; plain Python is auditable and needs no signing.
+Critical events currently use a sticky tile and a `winsound` beep, with no extra
+dependencies. A real Windows toast (clickable, shows even when the bar is hidden)
+needs either an extra dependency like `windows-toasts` or a WinRT / tray-icon
+path. Keep it optional so the default install stays dependency-light.
+
+### 5. LibreHardwareMonitor provider
+
+The no-admin sources cover a lot, but three things need kernel-level access: true
+per-core CPU temperature, fan RPM, and AMD/Intel GPU temp, clock and power.
+LibreHardwareMonitor exposes all of these. The plan is an optional provider that
+reads a running LibreHardwareMonitor instance over its local web server
+(`http://localhost:8085/data.json`, which only needs `urllib`), detected
+automatically and hidden when it isn't running. LibreHardwareMonitor runs with
+admin; GlintBar itself stays no-admin. The SYS Temp tile is the no-admin fallback
+in the meantime.
+
+### 6. Multiple monitors and taskbar position
+
+Right now it assumes one primary monitor with a taskbar along the bottom. It
+should handle top and side taskbars and let you choose the monitor.
+
+### 7. Recent-events log
+
+A short timestamped history of what alerted or surfaced, so brief spikes can be
+reviewed after the fact. The CSV log covers part of this already.
+
+### 8. Other platforms
+
+Windows only for now, since it leans on Win32 and the taskbar. macOS or Linux
+would need different placement and metric code, probably a separate front end
+over the same collector. That's a big job.
+
+## Notes on the project
+
+Distribution is source-first, no `.exe`. Corporate environments block unsigned
+binaries, and plain Python is easy to audit and needs no signing.

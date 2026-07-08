@@ -170,7 +170,7 @@ class PdhGpuProvider:
 
 class ThermalProvider:
     """System temperature from the ACPI thermal zone (no admin). A generic zone,
-    not the exact CPU package sensor — for that, use LibreHardwareMonitor."""
+    not the exact CPU package sensor. For that, use LibreHardwareMonitor."""
     metrics = ["sys_temp"]
 
     def __init__(self):
@@ -628,7 +628,7 @@ def _show_detail(metric_id, chip_center_css):
     u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
     u.MoveWindow(hwnd, x, y, W, H, True)
     u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-    u.ShowWindow(hwnd, 8)            # SW_SHOWNA — show without stealing focus
+    u.ShowWindow(hwnd, 8)            # SW_SHOWNA, show without stealing focus
     return True
 
 
