@@ -1,4 +1,4 @@
-# glintbar
+# GlintBar
 
 A slim, always-on-top hardware monitor that lives in the **empty space of your
 Windows taskbar** (or docked at the top/bottom). It shows live CPU, RAM, GPU,
