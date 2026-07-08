@@ -44,11 +44,10 @@ Two, both widely used and open source:
 
 - **Read the source** — it's small (~600 lines in `monitor.py`, plus three HTML
   files).
-- **Automated scanning** runs on every push:
-  [`ruff`](https://github.com/astral-sh/ruff) (lint),
-  [`bandit`](https://github.com/PyCQA/bandit) (Python security scanner), and
-  [CodeQL](https://codeql.github.com/) (semantic security analysis). See the
-  **Actions** and **Security** tabs.
+- **Automated scanning:** CI runs [`ruff`](https://github.com/astral-sh/ruff)
+  (lint) and [`bandit`](https://github.com/PyCQA/bandit) (Python security scanner)
+  on every push, and GitHub's [CodeQL](https://codeql.github.com/) default code
+  scanning performs semantic analysis. See the **Actions** and **Security** tabs.
 - **Confirm no network use** — read the code (there are no HTTP/socket calls), or
   run it behind a network monitor.
 

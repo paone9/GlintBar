@@ -1,7 +1,6 @@
 # GlintBar
 
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A slim, always-on-top hardware monitor that lives in the **empty space of your
@@ -143,9 +142,10 @@ no obfuscation, no admin, and no network access whatsoever** (no telemetry, no
 update checks — it runs fully offline). It only *reads* system metrics and writes
 `config.json`/`logs` inside its own folder.
 
-Every push is scanned by `ruff` (lint), `bandit` (Python security scanner), and
-CodeQL (semantic analysis) — see the badges above and the **Actions**/**Security**
-tabs. Full details of exactly what it accesses are in [SECURITY.md](SECURITY.md).
+Every push is scanned by `ruff` (lint) and `bandit` (Python security scanner) in
+CI, and GitHub's **CodeQL** default code scanning runs semantic analysis — see the
+CI badge above and the repo's **Security** tab. Full details of exactly what it
+accesses are in [SECURITY.md](SECURITY.md).
 
 ## License
 
