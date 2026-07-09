@@ -476,6 +476,11 @@ BAR_HEIGHT = 52       # physical px, used for "bottom"/"top" docks
 EMBED = True          # float over the taskbar gap as a topmost window
 
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT),
+                ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
 def _win32_setup(user32):
     user32.FindWindowW.restype = wt.HWND
     user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
@@ -487,6 +492,11 @@ def _win32_setup(user32):
     user32.MoveWindow.argtypes = [wt.HWND, wt.INT, wt.INT, wt.INT, wt.INT, wt.BOOL]
     user32.ShowWindow.argtypes = [wt.HWND, wt.INT]
     user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, wt.INT, wt.INT, wt.INT, wt.INT, wt.UINT]
+    user32.GetForegroundWindow.restype = wt.HWND
+    user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, wt.INT]
+    user32.MonitorFromWindow.restype = wt.HMONITOR
+    user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+    user32.GetMonitorInfoW.argtypes = [wt.HMONITOR, ctypes.POINTER(MONITORINFO)]
 
 
 def _rect(user32, hwnd):
@@ -514,6 +524,33 @@ def _taskbar_region(user32):
     rebar = user32.FindWindowExW(tray, None, "ReBarWindow32", None)
     left = _rect(user32, rebar)[2] if rebar else tbl + int((tbr - tbl) * 0.30)
     return (tbl, tbt, tbr, tbb, tray), (left, right)
+
+
+def _foreground_is_fullscreen(user32):
+    """True when a real app covers the whole monitor the bar sits on
+    (fullscreen video, games, presentations), so the bar should get out of the way."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return False
+    our = EMBED_STATE.get("hwnd")
+    if our and hwnd == our:
+        return False
+    buf = ctypes.create_unicode_buffer(64)
+    user32.GetClassNameW(hwnd, buf, 64)
+    if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
+        return False   # the desktop / shell, not a fullscreen app
+    MONITOR_DEFAULTTONEAREST = 2
+    fg_mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+    if our and fg_mon != user32.MonitorFromWindow(our, MONITOR_DEFAULTTONEAREST):
+        return False   # fullscreen app is on another screen; leave the bar alone
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if not user32.GetMonitorInfoW(fg_mon, ctypes.byref(mi)):
+        return False
+    m, r = mi.rcMonitor, wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    return (r.left <= m.left and r.top <= m.top
+            and r.right >= m.right and r.bottom >= m.bottom)
 
 
 EMBED_STATE = {}
@@ -569,19 +606,30 @@ def _overlay(user32, gap_l, gap_r, top, height, scale):
 def _watcher():
     """Keep the bar correctly placed and on top as the taskbar changes over time."""
     while True:
-        time.sleep(3)
+        time.sleep(1)
         st = EMBED_STATE
         if not st.get("hwnd"):
             continue
         try:
             u = st["user32"]
-            # always cheaply re-assert topmost (no move/flicker)
+            # hide while a fullscreen app (video, game, slideshow) owns the screen
+            fs = _foreground_is_fullscreen(u)
+            if fs:
+                if not st.get("hidden_fs"):
+                    u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
+                    _hide_detail()
+                    st["hidden_fs"] = True
+                continue
+            if st.get("hidden_fs"):
+                st["hidden_fs"] = False
+                u.ShowWindow(st["hwnd"], 5)       # SW_SHOW
+                _place(st.get("last_css"))        # re-fit and re-assert topmost
+            # normal upkeep: re-assert topmost and re-fit if the taskbar gap moved
             u.SetWindowPos(st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
             region = _taskbar_region(u)
             if not region:
                 continue
             (tbl, tbt, tbr, tbb, tray), (gl, gr) = region
-            # re-place only if the gap actually moved (avoids needless MoveWindow)
             if abs(gl - st["gap_l"]) > 8 or abs(gr - st["gap_r"]) > 8 or tbt != st["top"]:
                 st["gap_l"], st["gap_r"], st["top"], st["height"] = gl, gr, tbt, tbb - tbt
                 _place(st.get("last_css"))

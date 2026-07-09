@@ -108,6 +108,9 @@ Set `DOCK` at the top of `monitor.py`:
 
 It assumes a single primary monitor with a bottom taskbar.
 
+When a video, game, or slideshow goes fullscreen on the same screen, the bar
+hides itself so it's not in the way, and it comes back when you exit fullscreen.
+
 ## Hover to expand
 
 Hover a metric and a bigger popup appears just above it with a full 60-second
