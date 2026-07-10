@@ -62,24 +62,22 @@ counter, so it needs no admin. It's a generic zone though, so treat it as a roug
 system-heat reading, not the exact CPU-package sensor, and some machines block it.
 
 Real per-core CPU temperature and fan RPM need kernel-level access, which no
-no-admin tool can do. For those, run
-[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-(open source). It loads a signed driver with admin and does the low-level reads;
-GlintBar stays at normal privilege and just reads its data. So GlintBar runs fully
-at normal privilege with a reduced sensor set, and picks up the extra CPU Temp and
-Fan tiles automatically when LibreHardwareMonitor is present.
+no-admin tool can do. For those, run a helper that already does the low-level
+reads with admin, and GlintBar reads from it while staying at normal privilege.
+It picks up the extra **CPU Temp** and **Fan** tiles automatically when one is
+present. Two options, whichever you already use:
 
-To enable it:
+**HWiNFO** (via shared memory): in HWiNFO, open Settings and tick **Shared Memory
+Support**. That's it. GlintBar reads the shared-memory block directly (no network
+at all). This is easiest if you already run HWiNFO.
 
-1. Install and run LibreHardwareMonitor (run it as admin so it can read the
-   sensors).
-2. In its Options menu, turn on **Remote Web Server** (default port 8085).
-3. Start LibreHardwareMonitor before GlintBar, or restart GlintBar. The CPU Temp
-   and Fan tiles appear on their own.
+**LibreHardwareMonitor** (open source, via a local web server): in its Options
+menu turn on **Remote Web Server** (default port 8085). GlintBar reads only from
+`http://127.0.0.1:8085` on your own machine, never the internet. Use
+`GLINTBAR_LHM_PORT` if you change the port.
 
-GlintBar reads only from `http://127.0.0.1:8085` on your own machine, never the
-internet. If you run the web server on a different port, set the
-`GLINTBAR_LHM_PORT` environment variable to match.
+Either way, start the helper before GlintBar (or restart GlintBar) and the tiles
+appear on their own. HWiNFO is preferred if both are running.
 
 ### Requirements
 
@@ -180,6 +178,9 @@ df.set_index("timestamp")[["gpu_temp", "gpu_clock", "gpu_power"]].plot()
 ## Notes
 
 - It adapts to any resolution and display scaling; DPI is read at runtime.
+- Light footprint: CPU, RAM, disk and network update every second, while the GPU
+  (which means spawning `nvidia-smi`) is polled every two seconds and cached in
+  between, so the monitor itself stays cheap.
 - Thresholds live in the `META` map at the top of `ui.html`, so they're easy to
   change.
 - Ideas that aren't built yet (attention rotation, anomaly detection, toast

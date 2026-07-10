@@ -19,8 +19,9 @@ obfuscation.
   busy machine. Names and CPU only, no memory contents.
 - WebView2 (through pywebview): renders a local HTML UI that's fully
   self-contained (inline CSS and JS, no external resources, no remote content).
-- Optional: if you turn on the LibreHardwareMonitor integration, it reads that
-  program's data from `http://127.0.0.1:8085` on your own machine (loopback only).
+- Optional sensor helpers, if you enable one: HWiNFO via its shared-memory block
+  (a local memory read, no network), or LibreHardwareMonitor via
+  `http://127.0.0.1:8085` on your own machine (loopback only, never the internet).
 
 ## What it writes
 

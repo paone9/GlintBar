@@ -70,20 +70,30 @@ def _nvidia_ok():
 class NvidiaProvider:
     kind = "nvidia"
     metrics = ["gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock"]
+    _INTERVAL = 2.0     # only spawn nvidia-smi this often; cache in between
+
+    def __init__(self):
+        self._cache = {}
+        self._t = 0.0
 
     def sample(self):
+        now = time.monotonic()
+        if self._cache and now - self._t < self._INTERVAL:
+            return self._cache      # reuse recent reading, no subprocess
+        self._t = now
         try:
             o = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(_NV_QUERY),
                                 "--format=csv,noheader,nounits"],
                                capture_output=True, text=True, timeout=5, creationflags=_NOWIN)
             p = [x.strip() for x in o.stdout.strip().split(",")]
             temp, util, mu, mt, power, clock = (float(x) for x in p)
-            return {"gpu_temp": temp, "gpu_util": util,
-                    "gpu_mem_pct": (mu / mt * 100.0 if mt else 0.0),
-                    "gpu_power": power, "gpu_clock": clock,
-                    "gpu_mem_used": mu, "gpu_mem_total": mt}
+            self._cache = {"gpu_temp": temp, "gpu_util": util,
+                           "gpu_mem_pct": (mu / mt * 100.0 if mt else 0.0),
+                           "gpu_power": power, "gpu_clock": clock,
+                           "gpu_mem_used": mu, "gpu_mem_total": mt}
         except Exception:
-            return {}
+            pass
+        return self._cache
 
 
 class _PDH_VAL(ctypes.Structure):
@@ -268,6 +278,79 @@ class LhmProvider:
         return out
 
 
+class _HWI_SM2(ctypes.Structure):
+    _fields_ = [("sig", ctypes.c_uint32), ("ver", ctypes.c_uint32),
+                ("rev", ctypes.c_uint32), ("poll", ctypes.c_int64),
+                ("sOff", ctypes.c_uint32), ("sSize", ctypes.c_uint32),
+                ("sCount", ctypes.c_uint32), ("rOff", ctypes.c_uint32),
+                ("rSize", ctypes.c_uint32), ("rCount", ctypes.c_uint32)]
+
+
+class _HWI_READ(ctypes.Structure):
+    _fields_ = [("t", ctypes.c_uint32), ("si", ctypes.c_uint32), ("rid", ctypes.c_uint32),
+                ("lo", ctypes.c_char * 128), ("lu", ctypes.c_char * 128),
+                ("unit", ctypes.c_char * 16), ("val", ctypes.c_double),
+                ("vmin", ctypes.c_double), ("vmax", ctypes.c_double), ("vavg", ctypes.c_double)]
+
+
+class HwinfoProvider:
+    """Real CPU temperature and fan RPM from a running HWiNFO.
+
+    HWiNFO reads the hardware sensors (with admin for its driver) and publishes
+    them in a shared-memory block. GlintBar stays no-admin and just reads it.
+    Enable it in HWiNFO: Settings -> 'Shared Memory Support'. Tiles appear only
+    when HWiNFO is running with that on."""
+    metrics = []
+
+    def __init__(self):
+        self.ok = False
+        self._p = None
+        try:
+            k = ctypes.windll.kernel32
+            k.OpenFileMappingW.restype = wt.HANDLE
+            k.OpenFileMappingW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
+            k.MapViewOfFile.restype = ctypes.c_void_p
+            k.MapViewOfFile.argtypes = [wt.HANDLE, wt.DWORD, wt.DWORD, wt.DWORD, ctypes.c_size_t]
+            h = k.OpenFileMappingW(0x0004, False, "Global\\HWiNFO_SENS_SM2")  # FILE_MAP_READ
+            if h:
+                self._p = k.MapViewOfFile(h, 0x0004, 0, 0, 0)
+        except Exception:
+            self._p = None
+        if self._p:
+            vals = self.sample()
+            self.metrics = [m for m in ("cpu_temp", "fan_rpm") if vals.get(m) is not None]
+            self.ok = bool(self.metrics)
+
+    def sample(self):
+        if not self._p:
+            return {}
+        try:
+            hdr = _HWI_SM2.from_address(self._p)
+            if not (0 < hdr.rCount < 100000 and 0 < hdr.rSize < 4096):
+                return {}
+            cpu_temps, fans = [], []
+            for i in range(hdr.rCount):
+                r = _HWI_READ.from_address(self._p + hdr.rOff + i * hdr.rSize)
+                if r.t == 1:                                   # temperature
+                    label = r.lu.decode("latin-1", "replace").lower()
+                    if 0 < r.val < 130 and "cpu" in label:
+                        cpu_temps.append((label, r.val))
+                elif r.t == 3:                                 # fan
+                    if 0 < r.val < 30000:
+                        fans.append(r.val)
+            out = {}
+            pkg = [v for lbl, v in cpu_temps
+                   if any(k in lbl for k in ("package", "tctl", "tdie"))]
+            cpu_t = max(pkg) if pkg else (max(v for _, v in cpu_temps) if cpu_temps else None)
+            if cpu_t is not None:
+                out["cpu_temp"] = round(cpu_t, 1)
+            if fans:
+                out["fan_rpm"] = round(max(fans))
+            return out
+        except Exception:
+            return {}
+
+
 def _detect_gpu():
     if _nvidia_ok():
         return NvidiaProvider()
@@ -282,11 +365,14 @@ GPU_KIND = GPU.kind if GPU else "none"
 GPU_METRICS = GPU.metrics if GPU else []
 THERMAL = ThermalProvider()
 THERMAL_METRICS = THERMAL.metrics if THERMAL.ok else []
-LHM = LhmProvider()
-LHM_METRICS = LHM.metrics if LHM.ok else []
+# real CPU temp + fan RPM: prefer HWiNFO (shared memory), else LibreHardwareMonitor
+SENSOR = HwinfoProvider()
+if not SENSOR.ok:
+    SENSOR = LhmProvider()
+SENSOR_METRICS = SENSOR.metrics if SENSOR.ok else []
 AVAILABLE = [m for m in METRIC_IDS
              if m in BASE_METRICS or m in GPU_METRICS
-             or m in THERMAL_METRICS or m in LHM_METRICS]
+             or m in THERMAL_METRICS or m in SENSOR_METRICS]
 
 CONFIG_PATH = os.path.join(HERE, "config.json")
 DEFAULT_CONFIG = {
@@ -383,7 +469,7 @@ class Collector:
 
         gpu = GPU.sample() if GPU else {}
         therm = THERMAL.sample() if THERMAL.ok else {}
-        lhm = LHM.sample() if LHM.ok else {}
+        lhm = SENSOR.sample() if SENSOR.ok else {}
 
         cpu = psutil.cpu_percent(interval=None)
         vm = psutil.virtual_memory()
