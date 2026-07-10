@@ -176,7 +176,7 @@ function updateAlerts(st){
 
 async function tick(){
   let st; try{ st = await window.pywebview.api.get_state(); }catch(e){ return; }
-  document.body.classList.toggle("embedded", !!st.embedded);
+  if (st.embedded) document.body.classList.add("embedded");   // latch: never revert to fill mode
   if (st.available) AVAIL = st.available;
   if (st.cfgv !== lastCfgV){ buildChips(st.config); lastCfgV = st.cfgv; }
   for (const id of shownIds){
@@ -189,11 +189,15 @@ async function tick(){
   if(st.logging){ b.classList.add("rec"); b.title="Logging → "+(st.logfile||"")+" (click to stop)"; }
   else { b.classList.remove("rec"); b.title="Toggle CSV logging"; }
   // auto-fit the embedded bar to its content width
-  if(sizePending && st.embedded){
-    requestAnimationFrame(async ()=>{
-      const ok = await window.pywebview.api.request_size(neededWidthCss());
-      if(ok) sizePending=false;
-    });
+  if(st.embedded){
+    // safety net: if the window drifted much wider than its content, re-fit
+    if(!sizePending && window.innerWidth - neededWidthCss() > 120) sizePending = true;
+    if(sizePending){
+      requestAnimationFrame(()=> requestAnimationFrame(async ()=>{   // let layout settle
+        const ok = await window.pywebview.api.request_size(neededWidthCss());
+        if(ok) sizePending = false;
+      }));
+    }
   }
 }
 
