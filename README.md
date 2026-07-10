@@ -128,7 +128,12 @@ Set `DOCK` at the top of `monitor.py`:
 - `"bottom"` is a thin full-width strip just above the taskbar.
 - `"top"` is a thin full-width strip at the top of the screen.
 
-It assumes a single primary monitor with a bottom taskbar.
+It lives on your **primary monitor's** taskbar (the one Windows treats as
+primary), and expects that taskbar along the bottom. On a multi-monitor setup with
+different scaling per monitor it stays correctly placed and sized, since the app is
+per-monitor-DPI aware. Only one copy runs at a time; launching it again just hands
+back to the running one. Letting you pick a different monitor is on the
+[roadmap](ROADMAP.md).
 
 When a video, game, or slideshow goes fullscreen on the same screen, the bar
 hides itself so it's not in the way, and it comes back when you exit fullscreen.

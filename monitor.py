@@ -954,9 +954,33 @@ def _open_settings():
     )
 
 
+_INSTANCE_MUTEX = None
+
+
+def _single_instance():
+    """False if another GlintBar is already running (keeps the mutex for our lifetime)."""
+    global _INSTANCE_MUTEX
+    k = ctypes.windll.kernel32
+    _INSTANCE_MUTEX = k.CreateMutexW(None, False, "GlintBar_singleton_mutex")
+    return k.GetLastError() != 183   # ERROR_ALREADY_EXISTS
+
+
 def main():
+    if not _single_instance():
+        return                       # another instance already owns the bar
     user32 = ctypes.windll.user32
-    user32.SetProcessDPIAware()
+    # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
+    # with different scaling (matches how WebView2 renders). Fall back on old Windows.
+    ok = False
+    try:
+        ok = bool(user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)))
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
     _win32_setup(user32)
     try:
         scale = user32.GetDpiForSystem() / 96.0
