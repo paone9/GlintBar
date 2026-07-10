@@ -224,7 +224,8 @@ class LhmProvider:
 
     def _fetch(self):
         try:
-            with urllib.request.urlopen(self.url, timeout=1.0) as r:  # localhost only
+            # self.url is a fixed http://127.0.0.1 loopback URL, no user input
+            with urllib.request.urlopen(self.url, timeout=1.0) as r:  # nosec B310
                 return json.loads(r.read().decode("utf-8", "replace"))
         except Exception:
             return None
