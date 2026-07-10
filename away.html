@@ -1,0 +1,69 @@
+<meta charset="utf-8">
+<style>
+  :root{ --bg:#12161c; --line:#2b3542; --text:#e6edf3; --dim:#9aa4af;
+         --ok:#58a6ff; --warn:#d29922; --crit:#f85149; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{ background:transparent; color:var(--text);
+        font:12px/1.35 "Segoe UI",system-ui,sans-serif; overflow:hidden; }
+  .card{ height:100vh; background:var(--bg); border:1px solid var(--line);
+         border-radius:10px; padding:12px 14px; box-shadow:0 8px 26px #000a;
+         display:flex; flex-direction:column; }
+  .hdr{ font-size:14px; font-weight:700; }
+  .sub{ font-size:11px; color:var(--dim); margin:1px 0 10px; }
+  .row{ display:flex; justify-content:space-between; font-size:12px; padding:2px 0; }
+  .row .k{ color:var(--dim); }
+  .row .v{ font-weight:600; font-variant-numeric:tabular-nums; }
+  .v.hot{ color:var(--crit); }
+  .lbl{ font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+        color:var(--dim); margin:10px 0 4px; }
+  .proc{ display:flex; justify-content:space-between; font-size:12px; padding:2px 0;
+         border-top:1px solid #ffffff10; }
+  .proc .p{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .proc .c{ color:var(--warn); font-weight:600; font-variant-numeric:tabular-nums;
+            padding-left:8px; }
+  .actions{ display:flex; gap:8px; margin-top:auto; padding-top:10px; }
+  .actions button{ flex:1; padding:7px; border-radius:6px; font-size:12px; cursor:pointer;
+        border:1px solid var(--line); background:#1b2430; color:var(--text); }
+  .actions .go{ border-color:var(--ok); color:var(--ok); }
+</style>
+
+<div class="card">
+  <div class="hdr">While you were away</div>
+  <div class="sub" id="sub">—</div>
+  <div class="row"><span class="k">Peak CPU</span><span class="v" id="cpu">—</span></div>
+  <div class="row"><span class="k">Peak system temp</span><span class="v" id="temp">—</span></div>
+  <div class="lbl">Busiest processes</div>
+  <div id="procs"></div>
+  <div class="actions">
+    <button id="logs">Open log</button>
+    <button class="go" id="dismiss">Got it</button>
+  </div>
+</div>
+
+<script>
+async function tick(){
+  let r; try{ r = await window.pywebview.api.get(); }catch(e){ return; }
+  if(!r) return;
+  document.getElementById("sub").textContent = `${r.when}, away for ${r.duration_min} min`;
+  const cpu = document.getElementById("cpu");
+  cpu.textContent = r.peak_cpu + "%"; cpu.className = "v" + (r.peak_cpu >= 60 ? " hot" : "");
+  const temp = document.getElementById("temp");
+  temp.textContent = r.peak_temp ? r.peak_temp + " °C" : "n/a";
+  temp.className = "v" + (r.peak_temp >= 90 ? " hot" : "");
+  const host = document.getElementById("procs"); host.innerHTML = "";
+  const list = r.offenders || [];
+  if(list.length){
+    for(const [name, c] of list){
+      const d = document.createElement("div"); d.className = "proc";
+      d.innerHTML = `<span class="p">${name}</span><span class="c">${c}%</span>`;
+      host.appendChild(d);
+    }
+  } else {
+    host.innerHTML = `<div class="proc"><span class="p">nothing stood out</span></div>`;
+  }
+}
+document.getElementById("logs").onclick = ()=> window.pywebview.api.open_logs();
+document.getElementById("dismiss").onclick = ()=> window.pywebview.api.dismiss();
+window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 1000); });
+</script>

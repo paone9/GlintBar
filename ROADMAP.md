@@ -16,6 +16,9 @@ first (see the README) rather than pile on features.
   moving your other tiles, plus an optional beep. Toggle in settings.
 - Placement watcher that keeps the bar fitted to the gap and on top as apps open
   and close or Explorer restarts.
+- Hides while a fullscreen app (video, game, slideshow) is on the same screen.
+- Away watch: while you're idle, it records which process is behind a busy
+  machine and shows a summary (plus `logs/away.csv`) when you return.
 
 ## Ideas, not built yet
 

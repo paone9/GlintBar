@@ -55,6 +55,7 @@
   <label class="row"><input type="checkbox" id="sparklines"> Show sparklines</label>
   <label class="row"><input type="checkbox" id="alerts"> Critical alerts (tile pops in on a breach)</label>
   <label class="row"><input type="checkbox" id="sound"> Alert sound</label>
+  <label class="row"><input type="checkbox" id="away_watch"> Watch for busy processes while away</label>
 </div>
 
 <div class="actions">
@@ -75,7 +76,7 @@ const PICKS = {
 };
 let ORDER = Object.keys(LABELS);
 let AVAIL = Object.keys(LABELS);
-let cfg = { metrics:ORDER.slice(), size:"M", align:"right", sparklines:true, alerts:true, sound:true };
+let cfg = { metrics:ORDER.slice(), size:"M", align:"right", sparklines:true, alerts:true, sound:true, away_watch:true };
 
 function renderMetrics(){
   const host = document.getElementById("metrics"); host.innerHTML="";
@@ -110,6 +111,7 @@ function renderAll(){
   document.getElementById("sparklines").checked = !!cfg.sparklines;
   document.getElementById("alerts").checked = cfg.alerts !== false;
   document.getElementById("sound").checked = cfg.sound !== false;
+  document.getElementById("away_watch").checked = cfg.away_watch !== false;
 }
 
 document.querySelectorAll(".pick").forEach(b=>{
@@ -118,6 +120,7 @@ document.querySelectorAll(".pick").forEach(b=>{
 document.getElementById("sparklines").onchange = (e)=>{ cfg.sparklines=e.target.checked; };
 document.getElementById("alerts").onchange = (e)=>{ cfg.alerts=e.target.checked; };
 document.getElementById("sound").onchange = (e)=>{ cfg.sound=e.target.checked; };
+document.getElementById("away_watch").onchange = (e)=>{ cfg.away_watch=e.target.checked; };
 document.getElementById("cancel").onclick = ()=> window.pywebview.api.cancel();
 document.getElementById("save").onclick = ()=>{
   if (!cfg.metrics.length) cfg.metrics = ORDER.slice();

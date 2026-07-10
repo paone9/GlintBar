@@ -125,6 +125,18 @@ than swapped in, so your other tiles don't move, and it stays until things settl
 optional beep on a new alert so you notice without watching. Both are toggles in
 settings.
 
+## Away watch
+
+If you step away and the machine keeps working hard, GlintBar figures out what was
+responsible and tells you when you get back. After a few minutes with no keyboard
+or mouse activity it starts watching, and while the CPU stays high it records
+which processes are behind it. When you return it shows a short summary (how long
+you were away, the peak CPU and system temperature, and the busiest processes) and
+appends a line to `logs/away.csv`. If nothing unusual happened, it stays quiet.
+
+Toggle it in settings. The idle delay and CPU threshold are in `config.json`
+(`away_after_min`, `away_cpu_pct`), defaulting to 5 minutes and 25%.
+
 ## CSV logging
 
 Press ● to write one row per second to `logs/glintbar_<timestamp>.csv` with every

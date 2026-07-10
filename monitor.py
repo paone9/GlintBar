@@ -216,6 +216,9 @@ DEFAULT_CONFIG = {
     "sparklines": True,
     "alerts": True,                # additive tile appears on a critical breach
     "sound": True,                 # soft beep on a new critical breach
+    "away_watch": True,            # watch for busy processes while you're away
+    "away_after_min": 5,           # idle minutes before "away" starts
+    "away_cpu_pct": 25,            # only report if CPU stayed above this while away
 }
 
 
@@ -469,6 +472,8 @@ with open(os.path.join(HERE, "settings.html"), encoding="utf-8") as _f:
     SETTINGS_HTML = _f.read()
 with open(os.path.join(HERE, "detail.html"), encoding="utf-8") as _f:
     DETAIL_HTML = _f.read()
+with open(os.path.join(HERE, "away.html"), encoding="utf-8") as _f:
+    AWAY_HTML = _f.read()
 
 
 DOCK = "taskbar"      # "taskbar" (in the empty taskbar area), "bottom", or "top"
@@ -551,6 +556,39 @@ def _foreground_is_fullscreen(user32):
     user32.GetWindowRect(hwnd, ctypes.byref(r))
     return (r.left <= m.left and r.top <= m.top
             and r.right >= m.right and r.bottom >= m.bottom)
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+def _idle_seconds():
+    """Seconds since the last keyboard or mouse input (how long you've been away)."""
+    lii = LASTINPUTINFO()
+    lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii))
+    return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) / 1000.0
+
+
+_IDLE_NAMES = {"System Idle Process", "Idle"}
+
+
+def _top_cpu_processes(n=5):
+    """(name, cpu%% of total) for the busiest real processes since the last call."""
+    ncpu = psutil.cpu_count() or 1
+    out = []
+    for p in psutil.process_iter(["name"]):
+        name = p.info["name"]
+        if name in _IDLE_NAMES:      # the idle process is unused CPU, not a culprit
+            continue
+        try:
+            c = p.cpu_percent(None) / ncpu
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if c > 0.5:
+            out.append((name or ("pid " + str(p.pid)), c))
+    out.sort(key=lambda x: -x[1])
+    return out[:n]
 
 
 EMBED_STATE = {}
@@ -692,6 +730,123 @@ def _hide_detail():
     return True
 
 
+AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between checks
+AWAY = {"report": None}
+
+
+def _away_hwnd(user32):
+    return user32.FindWindowW(None, "glintbar away")
+
+
+def _log_away(rep):
+    try:
+        path = os.path.join(LOG_DIR, "away.csv")
+        new = not os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["when", "away_min", "peak_cpu", "peak_sys_temp",
+                            "top_process", "top_cpu"])
+            top = rep["offenders"][0] if rep["offenders"] else ("", 0)
+            w.writerow([rep["when"], rep["duration_min"], rep["peak_cpu"],
+                        rep["peak_temp"], top[0], top[1]])
+    except Exception:
+        pass
+
+
+def _show_away():
+    st = EMBED_STATE
+    u = st.get("user32") or ctypes.windll.user32
+    hwnd = _away_hwnd(u)
+    if not hwnd:
+        return
+    scale = st.get("scale", 1.0)
+    W, H = int(380 * scale), int(240 * scale)
+    sw = u.GetSystemMetrics(0)
+    x, y = (sw - W) // 2, int(70 * scale)
+    GWL_EXSTYLE, WS_EX_TOOLWINDOW = -20, 0x80
+    ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW)
+    u.MoveWindow(hwnd, x, y, W, H, True)
+    u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
+    u.ShowWindow(hwnd, 8)            # SW_SHOWNA
+
+
+def _finalize_away(stats):
+    if not stats or stats["samples"] == 0:
+        return
+    peak_cpu, peak_temp = stats["peak_cpu"], stats["peak_temp"]
+    if peak_cpu < CONFIG.get("away_cpu_pct", 25) and peak_temp < 85:
+        return                       # nothing worth reporting
+    offenders = sorted(stats["proc_cpu"].items(), key=lambda x: -x[1])[:3]
+    offenders = [(name, round(total / stats["samples"], 1)) for name, total in offenders]
+    AWAY["report"] = {
+        "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "duration_min": round((time.time() - stats["start"]) / 60, 1),
+        "peak_cpu": round(peak_cpu, 1),
+        "peak_temp": round(peak_temp, 1),
+        "offenders": offenders,
+    }
+    _log_away(AWAY["report"])
+    if CONFIG.get("sound", True):
+        try:
+            winsound.MessageBeep(0x30)
+        except Exception:
+            pass
+    _show_away()
+
+
+def away_loop():
+    """While you're away, watch for a busy machine and note the process behind it."""
+    away, stats = False, None
+    _top_cpu_processes()             # prime per-process CPU baselines
+    while True:
+        time.sleep(AWAY_POLL)
+        try:
+            _top_cpu_processes()     # keep baselines warm even when present
+            if not CONFIG.get("away_watch", True):
+                away, stats = False, None
+                continue
+            idle = _idle_seconds()
+            threshold = CONFIG.get("away_after_min", 5) * 60
+            if idle >= threshold:
+                if not away:
+                    away = True
+                    stats = {"start": time.time(), "peak_cpu": 0.0,
+                             "peak_temp": 0.0, "proc_cpu": {}, "samples": 0}
+                snap = collector.snapshot()["latest"]
+                cpu = snap.get("cpu") or 0.0
+                temp = snap.get("sys_temp") or 0.0
+                stats["peak_cpu"] = max(stats["peak_cpu"], cpu)
+                stats["peak_temp"] = max(stats["peak_temp"], temp)
+                stats["samples"] += 1
+                if cpu >= CONFIG.get("away_cpu_pct", 25):
+                    for name, c in _top_cpu_processes():
+                        stats["proc_cpu"][name] = stats["proc_cpu"].get(name, 0.0) + c
+            elif away:
+                away = False
+                _finalize_away(stats)
+                stats = None
+        except Exception:
+            pass
+
+
+class AwayApi:
+    def get(self):
+        return AWAY.get("report")
+
+    def dismiss(self):
+        u = ctypes.windll.user32
+        hwnd = _away_hwnd(u)
+        if hwnd:
+            u.ShowWindow(hwnd, 0)
+        return True
+
+    def open_logs(self):
+        os.startfile(LOG_DIR)
+        return True
+
+
 def _open_settings():
     if any(w.title == "glintbar settings" for w in webview.windows):
         return
@@ -743,9 +898,17 @@ def main():
         frameless=True, on_top=True, resizable=False,
         background_color="#12161c",
     )
+    # "while you were away" report popup, created hidden; shown on your return
+    webview.create_window(
+        "glintbar away", html=AWAY_HTML, js_api=AwayApi(),
+        width=380, height=240, min_size=(80, 1), hidden=True,
+        frameless=True, on_top=True, resizable=False,
+        background_color="#12161c",
+    )
     if EMBED and embed_args is not None:
         threading.Thread(target=_overlay, args=(user32, *embed_args), daemon=True).start()
         threading.Thread(target=_watcher, daemon=True).start()
+    threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
     webview.start()
