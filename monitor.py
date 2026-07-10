@@ -632,13 +632,15 @@ def _overlay(user32, gap_l, gap_r, top, height, scale):
         time.sleep(0.1)
     if not hwnd:
         return
-    # tool window: no taskbar button / alt-tab entry, always topmost
-    GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST = -20, 0x00000080, 0x00000008
+    # tool window: no taskbar button, no Alt-Tab entry, always topmost
+    GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW, WS_EX_TOPMOST = -20, 0x80, 0x40000, 0x08
     ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+    ex = (ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_APPWINDOW
+    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+    user32.ShowWindow(hwnd, 0)     # hide/show so Windows drops the taskbar/Alt-Tab entry
     EMBED_STATE.update(hwnd=hwnd, user32=user32, gap_l=gap_l, gap_r=gap_r,
                        top=top, height=height, scale=scale)
-    _place(None)   # start spanning the whole gap; the UI shrinks it to fit
+    _place(None)   # re-shows it (SW_SHOW) as a tool window and fits it to the gap
 
 
 def _watcher():
