@@ -11,11 +11,16 @@ obfuscation.
 - `nvidia-smi`: read-only GPU queries (`--query-gpu=...`) when an NVIDIA driver is
   present. It never changes GPU state.
 - psutil: CPU, RAM, disk, and network counters.
-- user32 (ctypes): it creates and positions its own window and reads taskbar
-  geometry (`FindWindow`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`). It does
-  not touch or inject into other processes.
+- user32 (ctypes): it creates and positions its own window, reads taskbar geometry
+  (`FindWindow`, `GetWindowRect`, `SetWindowPos`, `MoveWindow`), and reads idle time
+  and lock state for the away watch (`GetLastInputInfo`, `OpenInputDesktop`). It
+  does not touch or inject into other processes.
+- psutil per-process CPU, but only while you're away, to name the process behind a
+  busy machine. Names and CPU only, no memory contents.
 - WebView2 (through pywebview): renders a local HTML UI that's fully
   self-contained (inline CSS and JS, no external resources, no remote content).
+- Optional: if you turn on the LibreHardwareMonitor integration, it reads that
+  program's data from `http://127.0.0.1:8085` on your own machine (loopback only).
 
 ## What it writes
 
@@ -25,8 +30,10 @@ login you add a shortcut yourself.
 
 ## What it never does
 
-- No network connections. No telemetry, analytics, update checks, or remote
-  content. It works fully offline.
+- No internet connections. No telemetry, analytics, update checks, or remote
+  content. The only network use is optional and local: if you enable the
+  LibreHardwareMonitor integration, it reads from `127.0.0.1` (your own machine).
+  Leave that off and it makes no network calls at all.
 - No administrator rights or elevation. It runs as a normal user.
 - No drivers and no kernel access. That's also why true per-core CPU temps and fan
   RPM aren't available without a separate helper (see the README).

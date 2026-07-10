@@ -20,9 +20,11 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import os
+import re
 import subprocess
 import threading
 import time
+import urllib.request
 import winsound
 from collections import deque
 from datetime import datetime
@@ -39,7 +41,7 @@ HISTORY_LEN = 60             # sparkline window (seconds)
 
 METRIC_IDS = [
     # grouped for readability: system vitals -> GPU cluster -> I/O
-    "cpu", "ram_pct", "sys_temp",
+    "cpu", "cpu_temp", "ram_pct", "sys_temp", "fan_rpm",
     "gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_clock", "gpu_power",
     "disk_mbps", "net_mbps",
 ]
@@ -191,6 +193,80 @@ class ThermalProvider:
             return {}
 
 
+LHM_PORT = int(os.environ.get("GLINTBAR_LHM_PORT", "8085"))
+
+
+def _num(s):
+    if not isinstance(s, str):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    m = re.search(r"-?\d+(?:[.,]\d+)?", s)
+    return float(m.group().replace(",", ".")) if m else None
+
+
+class LhmProvider:
+    """Real CPU temperature and fan RPM from a running LibreHardwareMonitor.
+
+    LibreHardwareMonitor (open source) reads the CPU's on-die sensors and the
+    fan controller through a signed kernel driver, which needs admin. GlintBar
+    stays no-admin and just reads LHM's local web server (Options -> Remote Web
+    Server, default port 8085). Tiles appear only when LHM is running."""
+    metrics = []
+
+    def __init__(self):
+        self.url = "http://127.0.0.1:" + str(LHM_PORT) + "/data.json"
+        self.ok = False
+        vals = self.sample()
+        self.metrics = [k for k in ("cpu_temp", "fan_rpm") if vals.get(k) is not None]
+        self.ok = bool(self.metrics)
+
+    def _fetch(self):
+        try:
+            with urllib.request.urlopen(self.url, timeout=1.0) as r:  # localhost only
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return None
+
+    def sample(self):
+        data = self._fetch()
+        if not data:
+            return {}
+        temps, fans = [], []
+
+        def walk(node):
+            t = node.get("Type")
+            if t == "Temperature":
+                v = _num(node.get("Value"))
+                if v is not None:
+                    temps.append((node.get("Text", "").lower(), v))
+            elif t == "Fan":
+                v = _num(node.get("Value"))
+                if v is not None:
+                    fans.append(v)
+            for c in node.get("Children", []):
+                walk(c)
+
+        walk(data)
+        out = {}
+        cpu_t = None
+        for keys in (("cpu package", "package"), ("tctl", "tdie")):
+            cand = [v for name, v in temps if any(k in name for k in keys)]
+            if cand:
+                cpu_t = max(cand)
+                break
+        if cpu_t is None:
+            cand = [v for name, v in temps if "core" in name and "gpu" not in name]
+            cpu_t = max(cand) if cand else None
+        if cpu_t is not None:
+            out["cpu_temp"] = round(cpu_t, 1)
+        fan = max([f for f in fans if f > 0], default=None)
+        if fan is not None:
+            out["fan_rpm"] = round(fan)
+        return out
+
+
 def _detect_gpu():
     if _nvidia_ok():
         return NvidiaProvider()
@@ -205,8 +281,11 @@ GPU_KIND = GPU.kind if GPU else "none"
 GPU_METRICS = GPU.metrics if GPU else []
 THERMAL = ThermalProvider()
 THERMAL_METRICS = THERMAL.metrics if THERMAL.ok else []
+LHM = LhmProvider()
+LHM_METRICS = LHM.metrics if LHM.ok else []
 AVAILABLE = [m for m in METRIC_IDS
-             if m in BASE_METRICS or m in GPU_METRICS or m in THERMAL_METRICS]
+             if m in BASE_METRICS or m in GPU_METRICS
+             or m in THERMAL_METRICS or m in LHM_METRICS]
 
 CONFIG_PATH = os.path.join(HERE, "config.json")
 DEFAULT_CONFIG = {
@@ -303,6 +382,7 @@ class Collector:
 
         gpu = GPU.sample() if GPU else {}
         therm = THERMAL.sample() if THERMAL.ok else {}
+        lhm = LHM.sample() if LHM.ok else {}
 
         cpu = psutil.cpu_percent(interval=None)
         vm = psutil.virtual_memory()
@@ -324,6 +404,8 @@ class Collector:
             "gpu_power": gpu.get("gpu_power"),
             "gpu_clock": gpu.get("gpu_clock"),
             "sys_temp": therm.get("sys_temp"),
+            "cpu_temp": lhm.get("cpu_temp"),
+            "fan_rpm": lhm.get("fan_rpm"),
             "cpu": cpu,
             "ram_pct": vm.percent,
             "net_mbps": max(net_mbps, 0.0),
@@ -798,8 +880,20 @@ def _finalize_away(stats):
     _show_away()
 
 
+def _is_locked():
+    """True if the workstation is locked (secure desktop can't be opened)."""
+    u = ctypes.windll.user32
+    u.OpenInputDesktop.restype = wt.HANDLE
+    h = u.OpenInputDesktop(0, False, 0x0100)   # DESKTOP_SWITCHDESKTOP
+    if h:
+        u.CloseDesktop(h)
+        return False
+    return True
+
+
 def away_loop():
-    """While you're away, watch for a busy machine and note the process behind it."""
+    """While you're away, watch for a busy machine and note the process behind it.
+    'Away' means the screen is locked, or no keyboard/mouse for away_after_min."""
     away, stats = False, None
     _top_cpu_processes()             # prime per-process CPU baselines
     while True:
@@ -811,14 +905,14 @@ def away_loop():
                 continue
             idle = _idle_seconds()
             threshold = CONFIG.get("away_after_min", 5) * 60
-            if idle >= threshold:
+            if _is_locked() or idle >= threshold:
                 if not away:
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0,
                              "peak_temp": 0.0, "proc_cpu": {}, "samples": 0}
                 snap = collector.snapshot()["latest"]
                 cpu = snap.get("cpu") or 0.0
-                temp = snap.get("sys_temp") or 0.0
+                temp = snap.get("cpu_temp") or snap.get("sys_temp") or 0.0
                 stats["peak_cpu"] = max(stats["peak_cpu"], cpu)
                 stats["peak_temp"] = max(stats["peak_temp"], temp)
                 stats["samples"] += 1

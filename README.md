@@ -23,6 +23,8 @@ average.
 | GPU Power | nvidia-smi | sudden dropouts under load |
 | GPU Clock | nvidia-smi | dropping to idle mid-load can mean a TDR hang |
 | SYS Temp | ACPI thermal zone | red >97 °C |
+| CPU Temp | LibreHardwareMonitor | real CPU package temp (needs LHM, see below) |
+| Fan | LibreHardwareMonitor | fan RPM (needs LHM, see below) |
 | CPU | psutil | red >95 % |
 | RAM | psutil | red >95 % |
 | Network | psutil | MB/s in+out |
@@ -49,15 +51,35 @@ GPU support is detected at launch:
 AMD and Intel GPUs get load only. Temp, clock, power and VRAM need NVIDIA. The
 settings panel greys out anything your hardware can't provide.
 
-### Temperatures and fans
+### Privilege levels: it works without admin, and does more with it
+
+GlintBar itself never needs administrator rights, and it runs fine on its own. At
+normal privilege you get everything except real CPU temperature and fan speed:
+CPU, RAM, disk, network, GPU (per the table above), and the SYS Temp tile.
 
 The SYS Temp tile reads the ACPI thermal zone through a Windows performance
 counter, so it needs no admin. It's a generic zone though, so treat it as a rough
-system-heat reading rather than the exact CPU-package sensor, and some machines
-block it. Getting true per-core CPU temperatures and fan RPM needs kernel-level
-access, which in practice means running a helper like
+system-heat reading, not the exact CPU-package sensor, and some machines block it.
+
+Real per-core CPU temperature and fan RPM need kernel-level access, which no
+no-admin tool can do. For those, run
 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-(with admin). That integration is on the [roadmap](ROADMAP.md).
+(open source). It loads a signed driver with admin and does the low-level reads;
+GlintBar stays at normal privilege and just reads its data. So GlintBar runs fully
+at normal privilege with a reduced sensor set, and picks up the extra CPU Temp and
+Fan tiles automatically when LibreHardwareMonitor is present.
+
+To enable it:
+
+1. Install and run LibreHardwareMonitor (run it as admin so it can read the
+   sensors).
+2. In its Options menu, turn on **Remote Web Server** (default port 8085).
+3. Start LibreHardwareMonitor before GlintBar, or restart GlintBar. The CPU Temp
+   and Fan tiles appear on their own.
+
+GlintBar reads only from `http://127.0.0.1:8085` on your own machine, never the
+internet. If you run the web server on a different port, set the
+`GLINTBAR_LHM_PORT` environment variable to match.
 
 ### Requirements
 
@@ -128,11 +150,12 @@ settings.
 ## Away watch
 
 If you step away and the machine keeps working hard, GlintBar figures out what was
-responsible and tells you when you get back. After a few minutes with no keyboard
-or mouse activity it starts watching, and while the CPU stays high it records
-which processes are behind it. When you return it shows a short summary (how long
-you were away, the peak CPU and system temperature, and the busiest processes) and
-appends a line to `logs/away.csv`. If nothing unusual happened, it stays quiet.
+responsible and tells you when you get back. It counts you as away as soon as the
+screen is locked, or after a few minutes with no keyboard or mouse activity. While
+you're away and the CPU stays high, it records which processes are behind it. When
+you return it shows a short summary (how long you were away, the peak CPU and
+temperature, and the busiest processes) and appends a line to `logs/away.csv`. If
+nothing unusual happened, it stays quiet.
 
 Toggle it in settings. The idle delay and CPU threshold are in `config.json`
 (`away_after_min`, `away_cpu_pct`), defaulting to 5 minutes and 25%.

@@ -17,8 +17,12 @@ first (see the README) rather than pile on features.
 - Placement watcher that keeps the bar fitted to the gap and on top as apps open
   and close or Explorer restarts.
 - Hides while a fullscreen app (video, game, slideshow) is on the same screen.
-- Away watch: while you're idle, it records which process is behind a busy
-  machine and shows a summary (plus `logs/away.csv`) when you return.
+- Away watch: while you're away (screen locked, or idle past a threshold) it
+  records which process is behind a busy machine and shows a summary (plus
+  `logs/away.csv`) when you return.
+- Optional LibreHardwareMonitor integration: real CPU package temperature and fan
+  RPM, read from a running LHM's local web server. No admin needed on GlintBar's
+  side; the tiles appear only when LHM is running.
 
 ## Ideas, not built yet
 
@@ -55,16 +59,12 @@ dependencies. A real Windows toast (clickable, shows even when the bar is hidden
 needs either an extra dependency like `windows-toasts` or a WinRT / tray-icon
 path. Keep it optional so the default install stays dependency-light.
 
-### 5. LibreHardwareMonitor provider
+### 5. More from LibreHardwareMonitor
 
-The no-admin sources cover a lot, but three things need kernel-level access: true
-per-core CPU temperature, fan RPM, and AMD/Intel GPU temp, clock and power.
-LibreHardwareMonitor exposes all of these. The plan is an optional provider that
-reads a running LibreHardwareMonitor instance over its local web server
-(`http://localhost:8085/data.json`, which only needs `urllib`), detected
-automatically and hidden when it isn't running. LibreHardwareMonitor runs with
-admin; GlintBar itself stays no-admin. The SYS Temp tile is the no-admin fallback
-in the meantime.
+The provider that reads CPU temperature and fan RPM from a running
+LibreHardwareMonitor is done (see the shipped list). The same feed also exposes
+AMD/Intel GPU temperature, clock and power, plus voltages and per-core detail,
+which the provider could surface as extra tiles for machines without NVIDIA.
 
 ### 6. Multiple monitors and taskbar position
 
