@@ -671,6 +671,8 @@ def _win32_setup(user32):
     user32.MonitorFromWindow.restype = wt.HMONITOR
     user32.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
     user32.GetMonitorInfoW.argtypes = [wt.HMONITOR, ctypes.POINTER(MONITORINFO)]
+    user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wt.DWORD
 
 
 def _rect(user32, hwnd):
@@ -700,6 +702,13 @@ def _taskbar_region(user32):
     return (tbl, tbt, tbr, tbb, tray), (left, right)
 
 
+# Windows shell UI whose host windows can momentarily cover the whole monitor
+_SHELL_PROCS = {
+    "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
+    "shellexperiencehost.exe", "textinputhost.exe",
+}
+
+
 def _foreground_is_fullscreen(user32):
     """True when a real app covers the whole monitor the bar sits on
     (fullscreen video, games, presentations), so the bar should get out of the way."""
@@ -713,6 +722,15 @@ def _foreground_is_fullscreen(user32):
     user32.GetClassNameW(hwnd, buf, 64)
     if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
         return False   # the desktop / shell, not a fullscreen app
+    # ignore Windows shell surfaces (Start menu, Search, action centre, etc.) whose
+    # host windows briefly cover the monitor but aren't fullscreen apps
+    try:
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if psutil.Process(pid.value).name().lower() in _SHELL_PROCS:
+            return False
+    except Exception:
+        pass
     MONITOR_DEFAULTTONEAREST = 2
     fg_mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
     if our and fg_mon != user32.MonitorFromWindow(our, MONITOR_DEFAULTTONEAREST):
