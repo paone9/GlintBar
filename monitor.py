@@ -965,10 +965,13 @@ def _finalize_away(stats):
     if not stats or stats["samples"] == 0:
         return
     peak_cpu, peak_temp = stats["peak_cpu"], stats["peak_temp"]
-    if peak_cpu < CONFIG.get("away_cpu_pct", 25) and peak_temp < 85:
-        return                       # nothing worth reporting
-    offenders = sorted(stats["proc_cpu"].items(), key=lambda x: -x[1])[:3]
-    offenders = [(name, round(total / stats["samples"], 1)) for name, total in offenders]
+    # only report a sustained busy spell (~1 min of high CPU) or a genuinely hot run,
+    # not a single momentary spike
+    min_busy = max(3, round(60 / AWAY_POLL))
+    if stats["busy_samples"] < min_busy and peak_temp < 85:
+        return
+    offenders = sorted(stats["proc_peak"].items(), key=lambda x: -x[1])[:3]
+    offenders = [(name, round(v, 1)) for name, v in offenders]   # peak %, no dilution
     AWAY["report"] = {
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "duration_min": round((time.time() - stats["start"]) / 60, 1),
@@ -1004,7 +1007,7 @@ def away_loop():
     while True:
         time.sleep(AWAY_POLL)
         try:
-            _top_cpu_processes()     # keep baselines warm even when present
+            tops = _top_cpu_processes()   # ONE measurement per interval (~AWAY_POLL window)
             if not CONFIG.get("away_watch", True):
                 away, stats = False, None
                 continue
@@ -1013,8 +1016,8 @@ def away_loop():
             if _is_locked() or idle >= threshold:
                 if not away:
                     away = True
-                    stats = {"start": time.time(), "peak_cpu": 0.0,
-                             "peak_temp": 0.0, "proc_cpu": {}, "samples": 0}
+                    stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
+                             "proc_peak": {}, "busy_samples": 0, "samples": 0}
                 snap = collector.snapshot()["latest"]
                 cpu = snap.get("cpu") or 0.0
                 temp = snap.get("cpu_temp") or snap.get("sys_temp") or 0.0
@@ -1022,8 +1025,12 @@ def away_loop():
                 stats["peak_temp"] = max(stats["peak_temp"], temp)
                 stats["samples"] += 1
                 if cpu >= CONFIG.get("away_cpu_pct", 25):
-                    for name, c in _top_cpu_processes():
-                        stats["proc_cpu"][name] = stats["proc_cpu"].get(name, 0.0) + c
+                    stats["busy_samples"] += 1
+                    by_name = {}                      # sum same-named procs this sample
+                    for name, c in tops:
+                        by_name[name] = by_name.get(name, 0.0) + c
+                    for name, c in by_name.items():   # then keep each name's peak
+                        stats["proc_peak"][name] = max(stats["proc_peak"].get(name, 0.0), c)
             elif away:
                 away = False
                 _finalize_away(stats)
