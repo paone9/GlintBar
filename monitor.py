@@ -1182,12 +1182,23 @@ def _diag():
         print("  verdict       : would FALL BACK to a floating bar (no gap found)")
 
 
+def _say(msg):
+    """Console feedback when run via python.exe; no-op under pythonw (stdout=None)."""
+    try:
+        if sys.stdout:
+            print(msg, flush=True)
+    except Exception:
+        pass
+
+
 def main():
     if "--diag" in sys.argv:
         _diag()
         return
     if not _single_instance():
-        return                       # another instance already owns the bar
+        _say("GlintBar is already running (this launch did nothing). "
+             "Close it from the bar's X button first, or just use the running one.")
+        return
     user32 = ctypes.windll.user32
     # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
     # with different scaling (matches how WebView2 renders). Fall back on old Windows.
@@ -1256,6 +1267,9 @@ def main():
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
+    _say("GlintBar starting (first launch can take a while on managed machines).\n"
+         "Running attached to this console: closing it closes the bar. For a\n"
+         "detached bar use start_glintbar.cmd / start_glintbar.vbs (pythonw).")
     webview.start()
 
 
