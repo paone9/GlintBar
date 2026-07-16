@@ -71,17 +71,15 @@ const META = {
 
 const chipsEl = document.getElementById("chips");
 let nodes = {}, shownIds = [], lastCfgV = -1, sizePending = false;
-let hideTimer = null, AVAIL = Object.keys(META);
+let AVAIL = Object.keys(META);
 
+// Show/switch the detail popup on hover. Hiding is owned by the Python cursor
+// watchdog (_detail_watchdog), which is robust when a DOM mouseleave never
+// fires and lets you move onto the popup itself to read it.
 function onChipEnter(id, el){
-  clearTimeout(hideTimer);
   const r = el.getBoundingClientRect();
   const center = r.left + r.width / 2;   // CSS px from the bar window's left edge
   try{ window.pywebview.api.show_detail(id, center); }catch(e){}
-}
-function onChipLeave(){
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(()=>{ try{ window.pywebview.api.hide_detail(); }catch(e){} }, 130);
 }
 
 function buildChips(cfg){
@@ -99,7 +97,6 @@ function buildChips(cfg){
       `<canvas id="c_${id}" width="120" height="44"></canvas>`;
     chipsEl.appendChild(c);
     c.addEventListener("mouseenter", ()=> onChipEnter(id, c));
-    c.addEventListener("mouseleave", onChipLeave);
     nodes[id] = {chip:c, val:c.querySelector(`#v_${id}`), cv:c.querySelector(`#c_${id}`)};
   }
   sizePending = true;

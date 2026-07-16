@@ -60,10 +60,16 @@ function draw(cv,data,m,colr){
   ctx.lineTo((n-1)*sx,h); ctx.lineTo(0,h); ctx.closePath(); ctx.fillStyle=colr+"22"; ctx.fill();
 }
 
+let lastMetric = null;
 async function tick(){
   let d; try{ d=await window.pywebview.api.get(); }catch(e){ return; }
-  if(!d || !d.metric){ return; }
+  if(!d || !d.metric){ lastMetric=null; return; }
   const m=META[d.metric]; if(!m) return;
+  if(d.metric !== lastMetric){   // new tile: wipe the previous frame before drawing this one
+    lastMetric = d.metric;
+    document.getElementById("stats").textContent = "";
+    const c0=document.getElementById("cv"); c0.getContext("2d").clearRect(0,0,c0.width,c0.height);
+  }
   const v=d.latest, c=cls(m,v);
   document.getElementById("lbl").textContent = m.lbl;
   const val=document.getElementById("val"); val.className="val "+c;
@@ -78,5 +84,5 @@ async function tick(){
     (s.min!=null?`min ${fmt(s.min,d.metric)}  ·  max ${fmt(s.max,d.metric)}  ·  avg ${fmt(s.avg,d.metric)}  ·  last 60s`:"") + extra;
   draw(document.getElementById("cv"), d.hist||[], m, color(c));
 }
-window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 250); });
+window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 100); });
 </script>

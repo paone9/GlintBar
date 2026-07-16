@@ -781,6 +781,20 @@ def _top_cpu_processes(n=5):
 EMBED_STATE = {}
 HWND_TOPMOST = -1
 SWP_NOMOVE_SIZE_ACT = 0x0001 | 0x0002 | 0x0010   # NOSIZE|NOMOVE|NOACTIVATE
+WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80, 0x08000000
+SW_HIDE, SW_SHOW, SW_SHOWNA = 0, 5, 8
+
+
+def _place_topmost(u, hwnd, x, y, w, h, show, ex_add=0):
+    """Move a window, pin it to the topmost band, and show it. Optionally OR in
+    extra ex-styles first (tool-window / no-activate). Shared by the bar, the
+    hover popup, and the away report so the placement rule lives in one place."""
+    if ex_add:
+        cur = u.GetWindowLongW(hwnd, -20)          # GWL_EXSTYLE
+        u.SetWindowLongW(hwnd, -20, cur | ex_add)
+    u.MoveWindow(hwnd, x, y, w, h, True)
+    u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
+    u.ShowWindow(hwnd, show)
 
 
 def _place(css_width):
@@ -800,9 +814,7 @@ def _place(css_width):
         x1 = gap_l + ((gap_r - gap_l) - w) // 2
     else:
         x1 = gap_r - 12 - w
-    u.MoveWindow(st["hwnd"], x1, top, w, h, True)          # absolute screen px
-    u.SetWindowPos(st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-    u.ShowWindow(st["hwnd"], 5)                            # SW_SHOW
+    _place_topmost(u, st["hwnd"], x1, top, w, h, SW_SHOW)   # absolute screen px
     st["x1"], st["w"] = x1, w
     if css_width:
         st["last_css"] = css_width
@@ -864,7 +876,7 @@ def _watcher():
             pass
 
 
-DETAIL = {"metric": None}
+DETAIL = {"metric": None, "rect": None}
 
 
 class DetailApi:
@@ -897,13 +909,9 @@ def _show_detail(metric_id, chip_center_css):
     cx = st.get("x1", st["gap_l"]) + int(chip_center_css * scale)
     x = max(6, min(cx - W // 2, st["gap_r"] - W))
     y = st["top"] - H - 8            # float just above the taskbar
-    # tool window so it never grabs a taskbar button
-    GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = -20, 0x80, 0x08000000
-    ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
-    u.MoveWindow(hwnd, x, y, W, H, True)
-    u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-    u.ShowWindow(hwnd, 8)            # SW_SHOWNA, show without stealing focus
+    # tool window (no taskbar button) + no-activate so it never steals focus
+    _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+    DETAIL["rect"] = (x, y, x + W, y + H)   # physical px, for the cursor watchdog
     return True
 
 
@@ -916,7 +924,57 @@ def _hide_detail():
     if hwnd:
         u.ShowWindow(hwnd, 0)        # SW_HIDE
     DETAIL["metric"] = None
+    DETAIL["rect"] = None
     return True
+
+
+def _bar_rect(u):
+    hwnd = EMBED_STATE.get("hwnd")
+    if not hwnd:
+        return None
+    r = wt.RECT()
+    if u.GetWindowRect(hwnd, ctypes.byref(r)):
+        return (r.left, r.top, r.right, r.bottom)
+    return None
+
+
+def _pt_in_rect(x, y, rect, margin=0):
+    if not rect:
+        return False
+    l, t, r, b = rect
+    return (l - margin) <= x <= (r + margin) and (t - margin) <= y <= (b + margin)
+
+
+def _detail_watchdog():
+    """Hide the hover popup once the cursor leaves both the bar and the popup.
+
+    The bar's DOM mouseleave is not reliable when the pointer exits onto the
+    adjacent topmost popup or off a screen edge, which could leave the popup
+    stuck open. Polling the real cursor position is robust, and counting the
+    popup's own rect as "inside" lets you move onto it to read it. A 12px
+    margin bridges the small gap between the bar and the popup.
+    """
+    u = ctypes.windll.user32
+    pt = wt.POINT()
+    outside = 0
+    while True:
+        time.sleep(0.08)
+        if not DETAIL.get("metric"):
+            outside = 0
+            continue
+        try:
+            u.GetCursorPos(ctypes.byref(pt))
+            inside = (_pt_in_rect(pt.x, pt.y, _bar_rect(u), 12)
+                      or _pt_in_rect(pt.x, pt.y, DETAIL.get("rect"), 12))
+            if inside:
+                outside = 0
+            else:
+                outside += 1
+                if outside >= 2:     # ~160ms of grace before hiding
+                    _hide_detail()
+                    outside = 0
+        except Exception:
+            pass
 
 
 AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between checks
@@ -953,12 +1011,7 @@ def _show_away():
     W, H = int(380 * scale), int(240 * scale)
     sw = u.GetSystemMetrics(0)
     x, y = (sw - W) // 2, int(70 * scale)
-    GWL_EXSTYLE, WS_EX_TOOLWINDOW = -20, 0x80
-    ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW)
-    u.MoveWindow(hwnd, x, y, W, H, True)
-    u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-    u.ShowWindow(hwnd, 8)            # SW_SHOWNA
+    _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
 
 
 def _finalize_away(stats):
@@ -1140,6 +1193,7 @@ def main():
     if EMBED and embed_args is not None:
         threading.Thread(target=_overlay, args=(user32, *embed_args), daemon=True).start()
         threading.Thread(target=_watcher, daemon=True).start()
+        threading.Thread(target=_detail_watchdog, daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
