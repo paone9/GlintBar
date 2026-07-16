@@ -17,8 +17,6 @@
          cursor:move; letter-spacing:-1px; }
   body.embedded #grip{ display:none; }
   #chips{ flex:0 0 auto; display:flex; align-items:center; min-width:0; }
-  body:not(.embedded) #chips{ flex:1 1 auto; }
-  body:not(.embedded) .chip{ flex:1 1 0; }
   .chip{ flex:0 0 auto; display:flex; align-items:center; gap:5px;
          padding:0 var(--pad); height:100%; white-space:nowrap;
          border-right:1px solid var(--line); }
@@ -173,7 +171,7 @@ function updateAlerts(st){
 
 async function tick(){
   let st; try{ st = await window.pywebview.api.get_state(); }catch(e){ return; }
-  if (st.embedded) document.body.classList.add("embedded");   // latch: never revert to fill mode
+  if (st.embedded) document.body.classList.add("embedded");   // latch: hides the drag grip
   if (st.available) AVAIL = st.available;
   if (st.cfgv !== lastCfgV){ buildChips(st.config); lastCfgV = st.cfgv; }
   for (const id of shownIds){

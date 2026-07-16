@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -31,6 +32,8 @@ from datetime import datetime
 
 import psutil
 import webview
+
+_T0 = time.monotonic()   # module init start, reported by --diag
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
@@ -941,8 +944,8 @@ def _bar_rect(u):
 def _pt_in_rect(x, y, rect, margin=0):
     if not rect:
         return False
-    l, t, r, b = rect
-    return (l - margin) <= x <= (r + margin) and (t - margin) <= y <= (b + margin)
+    left, top, right, bottom = rect
+    return (left - margin) <= x <= (right + margin) and (top - margin) <= y <= (bottom + margin)
 
 
 def _detail_watchdog():
@@ -1129,7 +1132,60 @@ def _single_instance():
     return k.GetLastError() != 183   # ERROR_ALREADY_EXISTS
 
 
+def _diag():
+    """Print the facts that decide how GlintBar renders on this machine
+    (taskbar detection, providers, timings). Run:  python monitor.py --diag"""
+    import platform
+    print("GlintBar diagnostics")
+    print("  python    :", platform.python_version())
+    print("  windows   :", platform.platform())
+    try:
+        from importlib.metadata import version
+        print("  pywebview :", version("pywebview"), " psutil:", version("psutil"))
+    except Exception:
+        pass
+    print("  module init (imports + provider detection): %.2fs" % (time.monotonic() - _T0))
+    u = ctypes.windll.user32
+    try:
+        if not u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            u.SetProcessDPIAware()
+    except Exception:
+        pass
+    _win32_setup(u)
+    try:
+        print("  dpi scale :", u.GetDpiForSystem() / 96.0,
+              " monitors:", u.GetSystemMetrics(80))       # SM_CMONITORS
+    except Exception:
+        pass
+    print("providers")
+    print("  gpu       :", GPU_KIND, GPU_METRICS)
+    print("  thermal   :", THERMAL_METRICS or "none")
+    print("  sensor    :", (type(SENSOR).__name__ if SENSOR.ok else "none"), SENSOR_METRICS)
+    print("  tiles     :", AVAILABLE)
+    t0 = time.perf_counter()
+    _nvidia_ok()
+    print("  nvidia-smi probe: %.2fs" % (time.perf_counter() - t0))
+    print("taskbar")
+    tray = u.FindWindowW("Shell_TrayWnd", None)
+    print("  Shell_TrayWnd :", ("found " + str(_rect(u, tray))) if tray else "NOT FOUND")
+    if tray:
+        notify = u.FindWindowExW(tray, None, "TrayNotifyWnd", None)
+        rebar = u.FindWindowExW(tray, None, "ReBarWindow32", None)
+        print("  TrayNotifyWnd :", _rect(u, notify) if notify else "not found (use taskbar right edge)")
+        print("  ReBarWindow32 :", _rect(u, rebar) if rebar else "not found (Win11: 30% heuristic)")
+    region = _taskbar_region(u)
+    if region:
+        (tbl, tbt, tbr, tbb, _t), (gl, gr) = region
+        print("  gap           : x %d..%d (%d px wide) at y=%d" % (gl, gr, gr - gl, tbt))
+        print("  verdict       : would EMBED in the taskbar gap")
+    else:
+        print("  verdict       : would FALL BACK to a floating bar (no gap found)")
+
+
 def main():
+    if "--diag" in sys.argv:
+        _diag()
+        return
     if not _single_instance():
         return                       # another instance already owns the bar
     user32 = ctypes.windll.user32
@@ -1169,7 +1225,7 @@ def main():
     # pywebview/WinForms scales window POSITION by the DPI factor, so pass DIPs
     x, y = round(x_phys / scale), round(y_phys / scale)
     api = Api()
-    webview.create_window(
+    bar = webview.create_window(
         "glintbar", html=HTML, js_api=api,
         width=width, height=height, x=x, y=y,
         min_size=(100, 1),      # allow a very thin bar (default min is 100 tall)
@@ -1191,7 +1247,10 @@ def main():
         background_color="#12161c",
     )
     if EMBED and embed_args is not None:
-        threading.Thread(target=_overlay, args=(user32, *embed_args), daemon=True).start()
+        # embed once the window actually exists (pywebview 'shown' event), so a
+        # slow machine (AV-scanned cold start) can't lose a startup race
+        bar.events.shown += lambda *a: threading.Thread(
+            target=_overlay, args=(user32, *embed_args), daemon=True).start()
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
