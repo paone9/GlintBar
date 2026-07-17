@@ -1,6 +1,7 @@
 # GlintBar
 
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/paone9/GlintBar/badge)](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A small always-on-top hardware monitor that sits in the empty part of your
@@ -194,8 +195,11 @@ telemetry, no update checks, nothing. It only reads system metrics and writes
 `config.json` and logs inside its own folder.
 
 CI runs `ruff` and `bandit` on every push, and GitHub's default CodeQL scanning
-runs semantic analysis. See the CI badge above and the repo's Security tab.
-[SECURITY.md](SECURITY.md) lists exactly what it touches.
+runs semantic analysis. GitHub Actions are pinned to commit SHAs and dependencies
+are version-pinned, so the build can't be shifted under you. An
+[OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
+grades the repo's security posture (badge above). See the repo's Security tab, and
+[SECURITY.md](SECURITY.md) for exactly what the app touches.
 
 ## License
 

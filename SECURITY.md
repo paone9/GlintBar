@@ -50,8 +50,8 @@ Two, both widely used and open source:
 
 ## How to check it yourself
 
-- Read the source. It's small: about 600 lines in `monitor.py` plus three HTML
-  files.
+- Read the source. It's small: about 1,300 lines in `monitor.py` plus a handful
+  of self-contained HTML files.
 - CI runs [`ruff`](https://github.com/astral-sh/ruff) and
   [`bandit`](https://github.com/PyCQA/bandit) on every push, and GitHub's default
   [CodeQL](https://codeql.github.com/) scanning runs semantic analysis. The
