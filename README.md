@@ -1,6 +1,6 @@
 # GlintBar
 
-![GlintBar sitting in the Windows taskbar: CPU, RAM, SYS, GPU, VRAM, clock, power, disk and network tiles with sparklines](docs/hero.png)
+![GlintBar sitting in the Windows taskbar: CPU, RAM, SYS, GPU, VRAM, clock, power, disk and network tiles with sparklines](https://raw.githubusercontent.com/paone9/GlintBar/main/docs/hero.png)
 
 [![PyPI](https://img.shields.io/pypi/v/glintbar)](https://pypi.org/project/glintbar/)
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
