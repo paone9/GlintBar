@@ -36,17 +36,20 @@
   #ctl button{ background:transparent; color:var(--dim); border:none; font-size:12px;
                cursor:pointer; padding:3px 5px; border-radius:3px; line-height:1; }
   #ctl button:hover{ color:var(--text); background:#ffffff14; }
-  #ctl #logBtn.rec{ color:var(--crit); }
+  #recdot{ display:none; flex:0 0 auto; width:8px; height:8px; border-radius:50%;
+           background:var(--crit); margin:0 5px 0 3px; box-shadow:0 0 5px var(--crit);
+           animation:recflash 1.1s ease-in-out infinite; }
+  body.logging #recdot{ display:block; }
+  @keyframes recflash{ 0%,100%{ opacity:1; } 50%{ opacity:.15; } }
 </style>
 
 <div id="bar">
   <div id="grip" class="pywebview-drag-region" title="Drag to move">⋮⋮</div>
   <div id="chips"></div>
   <div id="alerts"></div>
+  <div id="recdot" title="Recording CSV"></div>
   <div id="ctl">
     <button id="setBtn"  title="Settings">⚙</button>
-    <button id="logBtn"  title="Toggle CSV logging">●</button>
-    <button id="logsBtn" title="Open logs folder">▤</button>
     <button id="closeBtn" title="Close">✕</button>
   </div>
 </div>
@@ -180,9 +183,11 @@ async function tick(){
     if(st.config.sparklines) spark(N.cv, st.hist[id]||[], m, color(c));
   }
   updateAlerts(st);
-  const b=document.getElementById("logBtn");
-  if(st.logging){ b.classList.add("rec"); b.title="Logging → "+(st.logfile||"")+" (click to stop)"; }
-  else { b.classList.remove("rec"); b.title="Toggle CSV logging"; }
+  const wasLogging = document.body.classList.contains("logging");
+  document.body.classList.toggle("logging", !!st.logging);
+  if(st.logging) document.getElementById("recdot").title =
+    "Recording CSV → "+(st.logfile||"")+" (stop in settings)";
+  if(!!st.logging !== wasLogging) sizePending = true;   // dot appeared/disappeared: re-fit width
   // auto-fit the embedded bar to its content width
   if(st.embedded){
     // safety net: if the window drifted much wider than its content, re-fit
@@ -197,8 +202,6 @@ async function tick(){
 }
 
 document.getElementById("setBtn").onclick   = ()=> window.pywebview.api.open_settings();
-document.getElementById("logBtn").onclick   = ()=> window.pywebview.api.toggle_log();
-document.getElementById("logsBtn").onclick  = ()=> window.pywebview.api.open_logs();
 document.getElementById("closeBtn").onclick = ()=> window.pywebview.api.close();
 
 window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 1000); });

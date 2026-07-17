@@ -1,7 +1,7 @@
 <meta charset="utf-8">
 <style>
   :root{ --bg:#12161c; --panel:#1b212b; --line:#2b3542; --text:#e6edf3;
-         --dim:#8b98a5; --accent:#58a6ff; }
+         --dim:#8b98a5; --accent:#58a6ff; --crit:#f85149; }
   *{ box-sizing:border-box; margin:0; padding:0; }
   body{ background:var(--bg); color:var(--text);
         font:13px/1.4 "Segoe UI",system-ui,sans-serif; padding:14px; }
@@ -26,6 +26,10 @@
         border:1px solid var(--line); background:var(--panel); color:var(--text); }
   .actions .save{ background:var(--accent); border-color:var(--accent); color:#06101f;
         font-weight:600; }
+  .logrow{ display:flex; gap:8px; align-items:center; }
+  #logtoggle{ background:var(--panel); color:var(--text); border:1px solid var(--line);
+        border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; }
+  #logtoggle.rec{ border-color:var(--crit); color:var(--crit); }
 </style>
 
 <h1>Bar settings</h1>
@@ -56,6 +60,15 @@
   <label class="row"><input type="checkbox" id="alerts"> Critical alerts (tile pops in on a breach)</label>
   <label class="row"><input type="checkbox" id="sound"> Alert sound</label>
   <label class="row"><input type="checkbox" id="away_watch"> Watch for busy processes while away</label>
+</div>
+
+<div class="group">
+  <div class="lbl">CSV logging</div>
+  <div class="logrow">
+    <button id="logtoggle">Start logging</button>
+    <button id="openlogs" class="pick">Open logs folder</button>
+  </div>
+  <div class="sub" id="logstatus" style="margin:5px 0 0">Writes one row per second to a CSV.</div>
 </div>
 
 <div class="actions">
@@ -121,6 +134,28 @@ document.getElementById("sparklines").onchange = (e)=>{ cfg.sparklines=e.target.
 document.getElementById("alerts").onchange = (e)=>{ cfg.alerts=e.target.checked; };
 document.getElementById("sound").onchange = (e)=>{ cfg.sound=e.target.checked; };
 document.getElementById("away_watch").onchange = (e)=>{ cfg.away_watch=e.target.checked; };
+
+document.getElementById("logtoggle").onclick = async ()=>{
+  try{ await window.pywebview.api.toggle_log(); }catch(e){}
+  await refreshLog(); fitWindow();
+};
+document.getElementById("openlogs").onclick = ()=>{ try{ window.pywebview.api.open_logs(); }catch(e){} };
+
+async function refreshLog(){
+  try{
+    const s = await window.pywebview.api.logging_state();
+    const on = s && s.logging;
+    const btn = document.getElementById("logtoggle");
+    btn.textContent = on ? "Stop logging" : "Start logging";
+    btn.classList.toggle("rec", !!on);
+    document.getElementById("logstatus").textContent =
+      on ? ("Recording → " + (s.logfile || "")) : "Writes one row per second to a CSV.";
+  }catch(e){}
+}
+function fitWindow(){
+  try{ window.pywebview.api.fit(Math.ceil(document.body.scrollHeight)); }catch(e){}
+}
+
 document.getElementById("cancel").onclick = ()=> window.pywebview.api.cancel();
 document.getElementById("save").onclick = ()=>{
   if (!cfg.metrics.length) cfg.metrics = ORDER.slice();
@@ -138,6 +173,8 @@ async function loadConfig(){
     cfg.metrics = ORDER.filter(x=>cfg.metrics.includes(x) && AVAIL.includes(x));
     renderAll();
   }catch(e){}
+  await refreshLog();
+  requestAnimationFrame(()=> requestAnimationFrame(fitWindow));   // size to content, above the bar
 }
 if (window.pywebview) loadConfig();
 window.addEventListener("pywebviewready", loadConfig);

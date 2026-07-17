@@ -642,6 +642,26 @@ class SettingsApi:
         self._close()
         return True
 
+    # CSV logging now lives here instead of on the bar (the bar just shows a
+    # flashing dot while recording).
+    def logging_state(self):
+        return {"logging": collector.logging,
+                "logfile": os.path.basename(collector.logfile) if collector.logfile else None}
+
+    def toggle_log(self):
+        if collector.logging:
+            collector.stop_log()
+            return {"logging": False, "logfile": None}
+        f = collector.start_log()
+        return {"logging": True, "logfile": os.path.basename(f)}
+
+    def open_logs(self):
+        os.startfile(LOG_DIR)
+        return True
+
+    def fit(self, css_h):
+        return _fit_settings(css_h)
+
 
 with open(os.path.join(HERE, "ui.html"), encoding="utf-8") as _f:
     HTML = _f.read()
@@ -1116,12 +1136,55 @@ class AwayApi:
         return True
 
 
+def _settings_x(u, W):
+    """Right-align the settings window near the bar, clamped on-screen (physical px)."""
+    st = EMBED_STATE
+    bx1 = st.get("x1", 0) + st.get("w", 0)
+    x = (bx1 - W) if bx1 else ((u.GetSystemMetrics(0) - W) // 2)   # SM_CXSCREEN
+    gap_r = st.get("gap_r")
+    if gap_r:
+        x = min(x, gap_r - W)
+    return max(x, 8)
+
+
+def _fit_settings(css_h):
+    """Size the settings window to its content and float it just above the bar,
+    growing upward so tall content stays on screen (never full-screen)."""
+    st = EMBED_STATE
+    u = st.get("user32") or ctypes.windll.user32
+    hwnd = u.FindWindowW(None, "glintbar settings")
+    if not hwnd:
+        return False
+    u.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+    scale = st.get("scale", 1.0)
+    wr, cr = wt.RECT(), wt.RECT()
+    u.GetWindowRect(hwnd, ctypes.byref(wr))
+    u.GetClientRect(hwnd, ctypes.byref(cr))
+    chrome_h = (wr.bottom - wr.top) - cr.bottom      # title bar + borders
+    W = wr.right - wr.left
+    screen_h = u.GetSystemMetrics(1)                 # SM_CYSCREEN
+    H = min(int(round(css_h * scale)) + chrome_h + 2, int(screen_h * 0.92))
+    top = st.get("top", screen_h)
+    x = _settings_x(u, W)
+    y = max(top - H - 8, 8)
+    u.MoveWindow(hwnd, x, y, W, H, True)
+    return True
+
+
 def _open_settings():
     if any(w.title == "glintbar settings" for w in webview.windows):
         return
+    st = EMBED_STATE
+    scale = st.get("scale", 1.0)
+    W, H = 360, 480                       # logical (DIP); JS calls fit() to trim to content
+    x = y = None
+    if st.get("hwnd"):
+        top = st.get("top") or 0
+        x = round(_settings_x(st["user32"], int(W * scale)) / scale)   # pywebview wants DIP
+        y = round(max(top - int(H * scale) - 8, 8) / scale)
     webview.create_window(
         "glintbar settings", html=SETTINGS_HTML, js_api=SettingsApi(),
-        width=360, height=460, resizable=False, on_top=True,
+        width=W, height=H, x=x, y=y, resizable=True, on_top=True,
         background_color="#12161c",
     )
 
