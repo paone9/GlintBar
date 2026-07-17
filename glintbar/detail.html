@@ -43,6 +43,7 @@ function fmt(v,id){ if(v==null)return"—";
   if(id==="net_mbps"||id==="disk_mbps"||id==="gpu_power")return v.toFixed(1); return Math.round(v); }
 function gv(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 function color(c){ return c==="crit"?gv("--crit"):c==="warn"?gv("--warn"):gv("--ok"); }
+const TEMP_IDS = new Set(["sys_temp", "cpu_temp", "gpu_temp"]);   // display converts to °F when temp_unit="F"
 
 function draw(cv,data,m,colr){
   const ctx=cv.getContext("2d"), w=cv.width, h=cv.height, pad=6;
@@ -70,10 +71,13 @@ async function tick(){
     document.getElementById("stats").textContent = "";
     const c0=document.getElementById("cv"); c0.getContext("2d").clearRect(0,0,c0.width,c0.height);
   }
-  const v=d.latest, c=cls(m,v);
+  const v=d.latest, c=cls(m,v);                     // colour and graph use raw °C
+  const F = (d.temp_unit==="F") && TEMP_IDS.has(d.metric);
+  const conv = x => (x==null ? x : (F ? x*9/5+32 : x));
+  const unit = F ? "°F" : m.unit;
   document.getElementById("lbl").textContent = m.lbl;
   const val=document.getElementById("val"); val.className="val "+c;
-  val.innerHTML = fmt(v,d.metric)+` <span class="u">${m.unit}</span>`;
+  val.innerHTML = fmt(conv(v),d.metric)+` <span class="u">${unit}</span>`;
   const s=d.stats||{};
   let extra="";
   if(d.metric==="gpu_mem_pct"&&d.extra&&d.extra.gpu_mem_used!=null)
@@ -81,7 +85,7 @@ async function tick(){
   if(d.metric==="ram_pct"&&d.extra&&d.extra.ram_used_gb!=null)
     extra=`  ·  ${d.extra.ram_used_gb.toFixed(1)}/${d.extra.ram_total_gb.toFixed(0)} GB`;
   document.getElementById("stats").textContent =
-    (s.min!=null?`min ${fmt(s.min,d.metric)}  ·  max ${fmt(s.max,d.metric)}  ·  avg ${fmt(s.avg,d.metric)}  ·  last 60s`:"") + extra;
+    (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  last 60s`:"") + extra;
   draw(document.getElementById("cv"), d.hist||[], m, color(c));
 }
 window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 100); });

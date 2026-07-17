@@ -130,7 +130,9 @@ Open the gear to change:
 - Align: Left, Center, or Right within the taskbar gap.
 - Sparklines, critical alerts, and alert sound: on or off.
 
-Your choices are saved to `config.json` in `%LOCALAPPDATA%\GlintBar`.
+Your choices are saved to `config.json` in `%LOCALAPPDATA%\GlintBar`. A few
+options have no toggle and live only in that file, for example `temp_unit`
+(`"C"` or `"F"`, default `"C"`) to show temperatures in Fahrenheit.
 
 ## Placement
 

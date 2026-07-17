@@ -73,6 +73,10 @@ const META = {
 const chipsEl = document.getElementById("chips");
 let nodes = {}, shownIds = [], lastCfgV = -1, sizePending = false;
 let AVAIL = Object.keys(META);
+// Temperatures are stored/compared in Celsius everywhere; only the display
+// converts when the (config-only) temp_unit is "F".
+const TEMP_IDS = new Set(["sys_temp", "cpu_temp", "gpu_temp"]);
+let TEMP_UNIT = "C";
 
 // Show/switch the detail popup on hover. Hiding is owned by the Python cursor
 // watchdog (_detail_watchdog), which is robust when a DOM mouseleave never
@@ -94,7 +98,7 @@ function buildChips(cfg){
     const c = document.createElement("div"); c.className="chip"; c.id="chip_"+id;
     c.innerHTML = `<span class="lbl">${m.lbl}</span>`+
       `<span class="val ok" id="v_${id}">--</span>`+
-      (m.unit?`<span class="u">${m.unit}</span>`:``)+
+      (m.unit?`<span class="u">${(TEMP_IDS.has(id)&&TEMP_UNIT==="F")?"°F":m.unit}</span>`:``)+
       `<canvas id="c_${id}" width="120" height="44"></canvas>`;
     chipsEl.appendChild(c);
     c.addEventListener("mouseenter", ()=> onChipEnter(id, c));
@@ -176,10 +180,12 @@ async function tick(){
   let st; try{ st = await window.pywebview.api.get_state(); }catch(e){ return; }
   if (st.embedded) document.body.classList.add("embedded");   // latch: hides the drag grip
   if (st.available) AVAIL = st.available;
+  TEMP_UNIT = (st.config && st.config.temp_unit==="F") ? "F" : "C";
   if (st.cfgv !== lastCfgV){ buildChips(st.config); lastCfgV = st.cfgv; }
   for (const id of shownIds){
-    const m=META[id], v=st.latest[id], c=cls(m,v), N=nodes[id]; if(!N) continue;
-    N.val.className="val "+c; N.val.textContent=fmt(v,id);
+    const m=META[id], v=st.latest[id], c=cls(m,v), N=nodes[id]; if(!N) continue;   // colour uses raw °C
+    const dv = (v!=null && TEMP_IDS.has(id) && TEMP_UNIT==="F") ? v*9/5+32 : v;
+    N.val.className="val "+c; N.val.textContent=fmt(dv,id);
     if(st.config.sparklines) spark(N.cv, st.hist[id]||[], m, color(c));
   }
   updateAlerts(st);

@@ -393,6 +393,7 @@ DEFAULT_CONFIG = {
     "away_watch": True,            # watch for busy processes while you're away
     "away_after_min": 5,           # idle minutes before "away" starts
     "away_cpu_pct": 25,            # only report if CPU stayed above this while away
+    "temp_unit": "C",              # "C" or "F"; display only, edit in config.json (no UI toggle)
 }
 
 
@@ -917,7 +918,8 @@ class DetailApi:
                 "latest": snap["latest"].get(mid),
                 "hist": snap["hist"].get(mid, []),
                 "stats": snap["stats"].get(mid),
-                "extra": snap["extra"]}
+                "extra": snap["extra"],
+                "temp_unit": CONFIG.get("temp_unit", "C")}
 
 
 def _detail_hwnd(user32):
