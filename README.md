@@ -6,11 +6,12 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/paone9/GlintBar/badge)](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A small always-on-top hardware monitor that sits in the empty part of your
-Windows taskbar (or docked at the top/bottom). It shows live CPU, RAM, GPU, disk
-and network so you can keep half an eye on them, and it flags thermal, clock or
-power spikes early, before they turn into throttling or a crash like a
-`VIDEO_TDR_FAILURE` GPU hang.
+GlintBar turns the empty gap in your Windows taskbar into a live hardware
+monitor: no window to keep open, no screen space given up. CPU, RAM, GPU, disk,
+and network sit there at a glance, each with a 60-second sparkline and a
+hover-to-expand graph. It quietly flags thermal, clock, and power spikes as they
+build, so throttling, driver hangs, and runaway background processes show up on
+the bar before they cost you a stutter or a crash.
 
 ## What it shows
 
