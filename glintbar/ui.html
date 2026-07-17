@@ -98,7 +98,7 @@ function buildChips(cfg){
     const c = document.createElement("div"); c.className="chip"; c.id="chip_"+id;
     c.innerHTML = `<span class="lbl">${m.lbl}</span>`+
       `<span class="val ok" id="v_${id}">--</span>`+
-      (m.unit?`<span class="u">${(TEMP_IDS.has(id)&&TEMP_UNIT==="F")?"°F":m.unit}</span>`:``)+
+      (m.unit?`<span class="u">${TEMP_IDS.has(id)?(TEMP_UNIT==="F"?"°F":"°C"):m.unit}</span>`:``)+
       `<canvas id="c_${id}" width="120" height="44"></canvas>`;
     chipsEl.appendChild(c);
     c.addEventListener("mouseenter", ()=> onChipEnter(id, c));
