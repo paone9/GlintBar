@@ -35,8 +35,13 @@ import webview
 
 _T0 = time.monotonic()   # module init start, reported by --diag
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(HERE, "logs")
+HERE = os.path.dirname(os.path.abspath(__file__))   # package dir; the bundled HTML lives here
+# Config and logs live in a per-user data folder, not next to the code, so this
+# works the same whether GlintBar is run from source or pip-installed (an
+# installed package must never write into site-packages).
+DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "GlintBar")
+os.makedirs(DATA_DIR, exist_ok=True)
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 SAMPLE_INTERVAL = 1.0        # seconds
@@ -377,7 +382,7 @@ AVAILABLE = [m for m in METRIC_IDS
              if m in BASE_METRICS or m in GPU_METRICS
              or m in THERMAL_METRICS or m in SENSOR_METRICS]
 
-CONFIG_PATH = os.path.join(HERE, "config.json")
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DEFAULT_CONFIG = {
     "metrics": list(AVAILABLE),    # which tiles to show, in order ("top picks")
     "size": "M",                   # S / M / L

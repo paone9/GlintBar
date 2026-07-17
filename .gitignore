@@ -4,3 +4,8 @@ logs/
 *.log
 config.json
 _test_*.py
+
+# build artifacts
+build/
+dist/
+*.egg-info/

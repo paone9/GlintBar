@@ -21,7 +21,7 @@ jobs:
       - name: Install tools
         run: python -m pip install ruff bandit
       - name: Compile
-        run: python -m py_compile monitor.py
+        run: python -m compileall glintbar
       - name: Lint (ruff)
         run: python -m ruff check .
       - name: Security scan (bandit)

@@ -4,4 +4,4 @@ Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 here = fso.GetParentFolderName(WScript.ScriptFullName)
 sh.CurrentDirectory = here
-sh.Run "pythonw """ & here & "\monitor.py""", 0, False
+sh.Run "pythonw -m glintbar", 0, False

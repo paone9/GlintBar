@@ -83,26 +83,38 @@ appear on their own. HWiNFO is preferred if both are running.
 
 ### Requirements
 
-Python 3.8+, `pip install -r requirements.txt` (`pywebview` and `psutil`), and
-the WebView2 runtime, which already ships with Windows 11. No admin, no compiled
-binaries, just Python source.
+Python 3.8+ and the WebView2 runtime, which already ships with Windows 11. No
+admin, no compiled binaries, just Python source. The only dependencies are
+`pywebview` and `psutil`, installed automatically.
 
-## Run
+## Install and run
+
+The simplest one-command install (isolated, adds a `glintbar` command):
+
+```
+pipx install git+https://github.com/paone9/GlintBar
+glintbar
+```
+
+Once it is released on PyPI this becomes `pip install glintbar`.
+
+From a clone, for hacking on it:
 
 ```
 pip install -r requirements.txt
-python monitor.py
+python -m glintbar
 ```
 
-For a launch with no console window, double-click `start_glintbar.vbs`, or
-`start_glintbar.cmd` if Windows Script Host is blocked. Both find `pythonw` on
-your PATH, so there are no hardcoded paths to fix.
+For a launch with no console window, double-click `start_glintbar.vbs` (or
+`start_glintbar.cmd` if Windows Script Host is blocked). To start it on login,
+drop a shortcut to the `glintbar` command (or to `start_glintbar.vbs`) into
+`shell:startup` (Win+R, then `shell:startup`).
 
 Controls sit on the right: the gear opens settings, ● toggles CSV logging (it
 turns red while recording), ▤ opens the log folder, and ✕ closes.
 
-To start it on login, drop a shortcut to `start_glintbar.vbs` into
-`shell:startup` (Win+R, then `shell:startup`).
+Settings and logs live in `%LOCALAPPDATA%\GlintBar` (`config.json` and `logs\`),
+so they survive reinstalls and stay out of the install folder.
 
 ## Settings
 
@@ -114,11 +126,11 @@ Open the gear to change:
 - Align: Left, Center, or Right within the taskbar gap.
 - Sparklines, critical alerts, and alert sound: on or off.
 
-Your choices are saved to `config.json`.
+Your choices are saved to `config.json` in `%LOCALAPPDATA%\GlintBar`.
 
 ## Placement
 
-Set `DOCK` at the top of `monitor.py`:
+Set `DOCK` at the top of `glintbar/monitor.py`:
 
 - `"taskbar"` (default) floats a topmost bar over the empty part of the taskbar,
   between your app buttons and the system tray. It's a normal top-level window
@@ -183,8 +195,8 @@ df.set_index("timestamp")[["gpu_temp", "gpu_clock", "gpu_power"]].plot()
 - Light footprint: CPU, RAM, disk and network update every second, while the GPU
   (which means spawning `nvidia-smi`) is polled every two seconds and cached in
   between, so the monitor itself stays cheap.
-- Thresholds live in the `META` map at the top of `ui.html`, so they're easy to
-  change.
+- Thresholds live in the `META` map at the top of `glintbar/ui.html`, so they're
+  easy to change.
 - Ideas that aren't built yet (attention rotation, anomaly detection, toast
   notifications, AMD/Intel temperatures) are written up in [ROADMAP.md](ROADMAP.md).
 

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glintbar"
+version = "1.0.0"
+description = "A slim always-on-top hardware monitor that lives in the empty part of the Windows taskbar."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [{ name = "paone9" }]
+keywords = ["hardware-monitor", "taskbar", "windows", "gpu", "cpu", "temperature", "system-monitor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "pywebview>=6.2.1",
+    "psutil>=7.2.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/paone9/GlintBar"
+Issues = "https://github.com/paone9/GlintBar/issues"
+
+# gui-scripts (not scripts) so the installed `glintbar` command launches with
+# pythonw on Windows: no stray console window.
+[project.gui-scripts]
+glintbar = "glintbar.monitor:main"
+
+[tool.setuptools]
+packages = ["glintbar"]
+
+[tool.setuptools.package-data]
+glintbar = ["*.html"]
