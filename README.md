@@ -197,9 +197,8 @@ telemetry, no update checks, nothing. It only reads system metrics and writes
 
 CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
 static analysis of the Python, the UI JavaScript, and the workflows themselves.
-GitHub Actions are pinned to commit SHAs and dependencies are hash-locked
-(`requirements.txt` is compiled with `--generate-hashes`), so neither the build
-nor an install can be shifted under you. An
+GitHub Actions are pinned to commit SHAs and the two dependencies are pinned to
+their tested versions, so the build can't shift under you. An
 [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 grades the repo's security posture (badge above). See the repo's Security tab, and
 [SECURITY.md](SECURITY.md) for exactly what the app touches.

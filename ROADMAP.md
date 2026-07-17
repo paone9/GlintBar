@@ -20,9 +20,10 @@ first (see the README) rather than pile on features.
 - Away watch: while you're away (screen locked, or idle past a threshold) it
   records which process is behind a busy machine and shows a summary (plus
   `logs/away.csv`) when you return.
-- Optional LibreHardwareMonitor integration: real CPU package temperature and fan
-  RPM, read from a running LHM's local web server. No admin needed on GlintBar's
-  side; the tiles appear only when LHM is running.
+- Optional sensor integration: real CPU package temperature and fan RPM from a
+  running HWiNFO (via its shared-memory block) or LibreHardwareMonitor (via its
+  local web server). No admin needed on GlintBar's side; the tiles appear only
+  when one of those is running.
 
 ## Ideas, not built yet
 

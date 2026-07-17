@@ -57,9 +57,8 @@ Two, both widely used and open source:
   [CodeQL](https://codeql.github.com/) workflow runs semantic analysis of the
   Python, the UI JavaScript, and the workflow files. The results are on the
   Actions and Security tabs.
-- Dependencies are hash-locked: `requirements.txt` is compiled from
-  `requirements.in` with `pip-compile --generate-hashes`, so `pip` refuses any
-  package whose contents don't match the recorded hash.
+- GitHub Actions are pinned to commit SHAs and the two dependencies are pinned to
+  their tested versions in `requirements.txt`.
 - To confirm there's no network use, read the code (there are no HTTP or socket
   calls) or run it behind a network monitor.
 
