@@ -1,5 +1,6 @@
 # GlintBar
 
+[![PyPI](https://img.shields.io/pypi/v/glintbar)](https://pypi.org/project/glintbar/)
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/paone9/GlintBar/badge)](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
@@ -89,14 +90,14 @@ admin, no compiled binaries, just Python source. The only dependencies are
 
 ## Install and run
 
-The simplest one-command install (isolated, adds a `glintbar` command):
+The simplest install (adds a `glintbar` command):
 
 ```
-pipx install git+https://github.com/paone9/GlintBar
+pip install glintbar
 glintbar
 ```
 
-Once it is released on PyPI this becomes `pip install glintbar`.
+Or with `pipx` for a fully isolated install: `pipx install glintbar`.
 
 From a clone, for hacking on it:
 
