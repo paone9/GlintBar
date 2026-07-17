@@ -1,0 +1,44 @@
+name: CodeQL
+
+# Static analysis (SAST) of the Python app, the embedded UI JS, and the
+# GitHub Actions workflows themselves. Runs on every push/PR and weekly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"   # weekly, Monday 04:27 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # upload results to the Security tab
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: github/codeql-action/analyze@b7351df727350dca84cb9d725d57dcf5bc82ba26 # v3
+        with:
+          category: "/language:${{ matrix.language }}"

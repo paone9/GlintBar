@@ -53,9 +53,13 @@ Two, both widely used and open source:
 - Read the source. It's small: about 1,300 lines in `monitor.py` plus a handful
   of self-contained HTML files.
 - CI runs [`ruff`](https://github.com/astral-sh/ruff) and
-  [`bandit`](https://github.com/PyCQA/bandit) on every push, and GitHub's default
-  [CodeQL](https://codeql.github.com/) scanning runs semantic analysis. The
-  results are on the Actions and Security tabs.
+  [`bandit`](https://github.com/PyCQA/bandit) on every push, and a
+  [CodeQL](https://codeql.github.com/) workflow runs semantic analysis of the
+  Python, the UI JavaScript, and the workflow files. The results are on the
+  Actions and Security tabs.
+- Dependencies are hash-locked: `requirements.txt` is compiled from
+  `requirements.in` with `pip-compile --generate-hashes`, so `pip` refuses any
+  package whose contents don't match the recorded hash.
 - To confirm there's no network use, read the code (there are no HTTP or socket
   calls) or run it behind a network monitor.
 

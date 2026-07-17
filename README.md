@@ -1,6 +1,7 @@
 # GlintBar
 
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/paone9/GlintBar/badge)](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -194,9 +195,11 @@ obfuscation, it needs no admin, and it makes no network connections at all: no
 telemetry, no update checks, nothing. It only reads system metrics and writes
 `config.json` and logs inside its own folder.
 
-CI runs `ruff` and `bandit` on every push, and GitHub's default CodeQL scanning
-runs semantic analysis. GitHub Actions are pinned to commit SHAs and dependencies
-are version-pinned, so the build can't be shifted under you. An
+CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
+static analysis of the Python, the UI JavaScript, and the workflows themselves.
+GitHub Actions are pinned to commit SHAs and dependencies are hash-locked
+(`requirements.txt` is compiled with `--generate-hashes`), so neither the build
+nor an install can be shifted under you. An
 [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 grades the repo's security posture (badge above). See the repo's Security tab, and
 [SECURITY.md](SECURITY.md) for exactly what the app touches.
