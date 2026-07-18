@@ -25,9 +25,10 @@ obfuscation.
 
 ## What it writes
 
-Just `config.json` and `logs/*.csv`, both inside its own folder. Nothing else: no
-registry keys, no system files, no auto-start entries. If you want it to launch on
-login you add a shortcut yourself.
+Just `config.json` and `logs/*.csv`, both in `%LOCALAPPDATA%\GlintBar` (a per-user
+data folder), not the install directory. Nothing else: no registry keys, no system
+files, no auto-start entries. If you want it to launch on login you add a shortcut
+yourself.
 
 ## What it never does
 
@@ -59,8 +60,9 @@ Two, both widely used and open source:
   Actions and Security tabs.
 - GitHub Actions are pinned to commit SHAs and the two dependencies are pinned to
   their tested versions in `requirements.txt`.
-- To confirm there's no network use, read the code (there are no HTTP or socket
-  calls) or run it behind a network monitor.
+- To confirm there's no internet use, read the code. The only network call is the
+  optional LibreHardwareMonitor read on `127.0.0.1`; leave that integration off and
+  there are none. Or run it behind a network monitor.
 
 ## Reporting a problem
 

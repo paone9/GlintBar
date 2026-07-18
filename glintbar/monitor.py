@@ -13,7 +13,7 @@ Features:
   - Hover a metric for an expanded live graph
   - Per-second CSV logging for offline analysis
 
-Run:  python monitor.py
+Run:  python -m glintbar   (or the installed `glintbar` command)
 """
 import csv
 import ctypes
@@ -394,6 +394,7 @@ DEFAULT_CONFIG = {
     "away_after_min": 5,           # idle minutes before "away" starts
     "away_cpu_pct": 25,            # only report if CPU stayed above this while away
     "temp_unit": "C",              # "C" or "F"; display only, edit in config.json (no UI toggle)
+    "hotkey": "ctrl+alt+g",        # global hide/show hotkey; "" disables it
 }
 
 
@@ -827,15 +828,24 @@ def _place_topmost(u, hwnd, x, y, w, h, show, ex_add=0):
 
 
 def _place(css_width):
-    """Resize/anchor the floating bar to fit `css_width` within the taskbar gap."""
+    """Resize/anchor the floating bar to fit `css_width` within the taskbar gap.
+    If the gap is too narrow to fit the bar, it yields (hides) rather than cover
+    the taskbar buttons, and returns on its own once there's room again."""
     st = EMBED_STATE
     if not st.get("hwnd"):
         return False
+    if st.get("user_hidden"):        # hidden by the hotkey; leave it hidden
+        return True
     u, scale = st["user32"], st["scale"]
     gap_l, gap_r, top, h = st["gap_l"], st["gap_r"], st["top"], st["height"]
     avail = gap_r - gap_l - 24
+    if avail < 160:                  # not enough room; get out of the way of the buttons
+        u.ShowWindow(st["hwnd"], SW_HIDE)
+        st["yielded"] = True
+        return True
+    st["yielded"] = False
     w = min(int(round(css_width * scale)) + 6, avail) if css_width else avail
-    w = max(w, 160)
+    w = max(w, 160)                  # avail >= 160 here, so w <= avail: never overlaps the buttons
     align = CONFIG.get("align", "right")
     if align == "left":
         x1 = gap_l + 12
@@ -878,6 +888,8 @@ def _watcher():
         st = EMBED_STATE
         if not st.get("hwnd"):
             continue
+        if st.get("user_hidden"):     # hidden by the hotkey; don't fight it
+            continue
         try:
             u = st["user32"]
             # hide while a fullscreen app (video, game, slideshow) owns the screen
@@ -901,6 +913,58 @@ def _watcher():
             if abs(gl - st["gap_l"]) > 8 or abs(gr - st["gap_r"]) > 8 or tbt != st["top"]:
                 st["gap_l"], st["gap_r"], st["top"], st["height"] = gl, gr, tbt, tbb - tbt
                 _place(st.get("last_css"))
+        except Exception:
+            pass
+
+
+def _parse_hotkey(spec):
+    """Turn 'ctrl+alt+g' into the virtual-key codes that must all be held."""
+    if not spec:
+        return None
+    mods = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10,
+            "win": 0x5B, "super": 0x5B}
+    vks, key = [], None
+    for part in str(spec).lower().split("+"):
+        part = part.strip()
+        if part in mods:
+            vks.append(mods[part])
+        elif len(part) == 1 and part.isalnum():
+            key = ord(part.upper())
+        elif part.startswith("f") and part[1:].isdigit():
+            key = 0x70 + int(part[1:]) - 1     # F1..F24
+    return (vks + [key]) if key is not None else None
+
+
+def _toggle_hidden():
+    """Hide/show the bar on demand (hotkey), so the taskbar underneath is reachable."""
+    st = EMBED_STATE
+    if not st.get("hwnd"):
+        return
+    u = st["user32"]
+    hide = not st.get("user_hidden", False)
+    st["user_hidden"] = hide
+    if hide:
+        u.ShowWindow(st["hwnd"], SW_HIDE)
+        _hide_detail()
+    else:
+        u.ShowWindow(st["hwnd"], SW_SHOW)
+        _place(st.get("last_css"))
+
+
+def _hotkey_loop():
+    """Poll the global hide/show hotkey (default Ctrl+Alt+G) and toggle on a fresh press."""
+    keys = _parse_hotkey(CONFIG.get("hotkey", "ctrl+alt+g"))
+    if not keys:
+        return
+    u = ctypes.windll.user32
+    was_down = False
+    while True:
+        time.sleep(0.05)
+        try:
+            down = all(u.GetAsyncKeyState(k) & 0x8000 for k in keys)
+            if down and not was_down:
+                _toggle_hidden()
+            was_down = down
         except Exception:
             pass
 
@@ -1204,7 +1268,7 @@ def _single_instance():
 
 def _diag():
     """Print the facts that decide how GlintBar renders on this machine
-    (taskbar detection, providers, timings). Run:  python monitor.py --diag"""
+    (taskbar detection, providers, timings). Run:  python -m glintbar --diag"""
     import platform
     print("GlintBar diagnostics")
     print("  python    :", platform.python_version())
@@ -1334,6 +1398,7 @@ def main():
             target=_overlay, args=(user32, *embed_args), daemon=True).start()
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
+        threading.Thread(target=_hotkey_loop, daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()

@@ -9,15 +9,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 GlintBar turns the empty gap in your Windows taskbar into a live hardware
-monitor: no window to keep open, no screen space given up. CPU, RAM, GPU, disk,
-and network sit there at a glance, each with a 60-second sparkline and a
-hover-to-expand graph. It quietly flags thermal, clock, and power spikes as they
-build, so throttling, driver hangs, and runaway background processes show up on
-the bar before they cost you a stutter or a crash.
+monitor: no window to keep open, no screen space given up. CPU, RAM, GPU,
+temperatures, disk, and network sit there at a glance, each with a 60-second
+sparkline and a hover-to-expand graph. Temperature, CPU, RAM and VRAM spikes
+raise an alert tile, and with clock and power on-screen you can catch a GPU clock
+collapse or power dropout, the fingerprint of a driver hang, before it turns into
+a stutter or a crash.
 
 ## What it shows
 
-A single row of up to nine metrics, each with a value and a 60-second sparkline.
+A single row of up to twelve metrics, each with a value and a 60-second sparkline.
 Hover a metric to pop out a bigger live graph with the session min, max and
 average.
 
@@ -29,8 +30,8 @@ average.
 | GPU Power | nvidia-smi | sudden dropouts under load |
 | GPU Clock | nvidia-smi | dropping to idle mid-load can mean a TDR hang |
 | SYS Temp | ACPI thermal zone | red >97 °C |
-| CPU Temp | LibreHardwareMonitor | real CPU package temp (needs LHM, see below) |
-| Fan | LibreHardwareMonitor | fan RPM (needs LHM, see below) |
+| CPU Temp | HWiNFO or LibreHardwareMonitor | real CPU package temp (needs a helper, see below) |
+| Fan | HWiNFO or LibreHardwareMonitor | fan RPM (needs a helper, see below) |
 | CPU | psutil | red >95 % |
 | RAM | psutil | red >95 % |
 | Network | psutil | MB/s in+out |
@@ -116,8 +117,9 @@ For a launch with no console window, double-click `start_glintbar.vbs` (or
 drop a shortcut to the `glintbar` command (or to `start_glintbar.vbs`) into
 `shell:startup` (Win+R, then `shell:startup`).
 
-Controls sit on the right: the gear opens settings, ● toggles CSV logging (it
-turns red while recording), ▤ opens the log folder, and ✕ closes.
+Controls sit on the right: the gear opens settings and ✕ closes. While CSV
+logging is recording, a small red dot flashes on the bar; starting/stopping it
+and opening the logs folder are in settings.
 
 Settings and logs live in `%LOCALAPPDATA%\GlintBar` (`config.json` and `logs\`),
 so they survive reinstalls and stay out of the install folder.
@@ -130,11 +132,13 @@ Open the gear to change:
   All. The bar rebuilds and resizes to fit only what you keep.
 - Size: Compact, Normal, or Large.
 - Align: Left, Center, or Right within the taskbar gap.
-- Sparklines, critical alerts, and alert sound: on or off.
+- Sparklines, critical alerts, alert sound, and away watch: on or off.
+- CSV logging: start or stop it, and open the logs folder.
 
 Your choices are saved to `config.json` in `%LOCALAPPDATA%\GlintBar`. A few
-options have no toggle and live only in that file, for example `temp_unit`
-(`"C"` or `"F"`, default `"C"`) to show temperatures in Fahrenheit.
+options have no toggle and live only in that file: `temp_unit` (`"C"` or `"F"`,
+default `"C"`) to show temperatures in Fahrenheit, and `hotkey` (the hide/show
+shortcut, default `"ctrl+alt+g"`, `""` to disable).
 
 ## Placement
 
@@ -151,12 +155,20 @@ Set `DOCK` at the top of `glintbar/monitor.py`:
 It lives on your **primary monitor's** taskbar (the one Windows treats as
 primary), and expects that taskbar along the bottom. On a multi-monitor setup with
 different scaling per monitor it stays correctly placed and sized, since the app is
-per-monitor-DPI aware. Only one copy runs at a time; launching it again just hands
-back to the running one. Letting you pick a different monitor is on the
+per-monitor-DPI aware. Only one copy runs at a time; launching it again while it
+is open just exits without doing anything, so close the running bar first if you
+want to restart it. Letting you pick a different monitor is on the
 [roadmap](ROADMAP.md).
 
 When a video, game, or slideshow goes fullscreen on the same screen, the bar
 hides itself so it's not in the way, and it comes back when you exit fullscreen.
+
+If the taskbar fills up and the gap gets too small to fit the bar, it steps aside
+on its own rather than cover your app buttons, and returns when there's room. To
+hide or show it yourself at any time, press **Ctrl+Alt+G** (change the combo or
+disable it with `hotkey` in `config.json`). On Windows 11's default (centred)
+taskbar the gap can't always be measured, so the hotkey is the reliable way to
+reach buttons the bar is sitting over.
 
 ## Hover to expand
 
@@ -165,8 +177,8 @@ graph, the current value, and min/max/avg. It disappears when you move off.
 
 ## Critical alerts
 
-When a metric crosses a critical threshold (GPU temp over 87 °C, or CPU, RAM or
-VRAM over 95%), an extra tile appears at the end of the bar. It's added rather
+When a metric crosses a critical threshold (a temperature past its red line, or
+CPU, RAM or VRAM over 95%), an extra tile appears at the end of the bar. It's added rather
 than swapped in, so your other tiles don't move, and it stays until things settle
 (about two seconds to appear, with a short cooldown before it clears). There's an
 optional beep on a new alert so you notice without watching. Both are toggles in
@@ -179,17 +191,19 @@ responsible and tells you when you get back. It counts you as away as soon as th
 screen is locked, or after a few minutes with no keyboard or mouse activity. While
 you're away and the CPU stays high, it records which processes are behind it. When
 you return it shows a short summary (how long you were away, the peak CPU and
-temperature, and the busiest processes) and appends a line to `logs/away.csv`. If
-nothing unusual happened, it stays quiet.
+temperature, and the busiest processes) and appends a line to `away.csv` in the
+logs folder. If nothing unusual happened, it stays quiet.
 
 Toggle it in settings. The idle delay and CPU threshold are in `config.json`
 (`away_after_min`, `away_cpu_pct`), defaulting to 5 minutes and 25%.
 
 ## CSV logging
 
-Press ● to write one row per second to `logs/glintbar_<timestamp>.csv` with every
-metric. Open it in pandas or Excel and line it up against a workload timeline to
-see how throttling, thermal drift or power dropouts track with load.
+Start CSV logging from settings to write one row per second, with every metric, to
+a timestamped file in `%LOCALAPPDATA%\GlintBar\logs`. The bar shows a flashing red
+dot while it records. Open the CSV in pandas or Excel and line it up against a
+workload timeline to see how throttling, thermal drift or power dropouts track
+with load.
 
 ```python
 import pandas as pd
@@ -211,9 +225,11 @@ df.set_index("timestamp")[["gpu_temp", "gpu_clock", "gpu_power"]].plot()
 ## Security
 
 GlintBar is meant to be easy to review. It's plain Python with no binaries and no
-obfuscation, it needs no admin, and it makes no network connections at all: no
-telemetry, no update checks, nothing. It only reads system metrics and writes
-`config.json` and logs inside its own folder.
+obfuscation, it needs no admin, and it makes no internet connections: no
+telemetry, no update checks, nothing. The only network use is optional and local:
+reading LibreHardwareMonitor on `127.0.0.1` if you turn that integration on. It
+only reads system metrics and writes `config.json` and logs to
+`%LOCALAPPDATA%\GlintBar`.
 
 CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
 static analysis of the Python, the UI JavaScript, and the workflows themselves.
