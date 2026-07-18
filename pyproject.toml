@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glintbar"
-version = "1.0.2"
+version = "1.0.3"
 description = "A slim always-on-top hardware monitor that lives in the empty part of the Windows taskbar."
 readme = "README.md"
 requires-python = ">=3.8"
