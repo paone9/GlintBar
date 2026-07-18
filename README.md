@@ -2,6 +2,7 @@
 
 ![GlintBar sitting in the Windows taskbar: CPU, RAM, SYS, GPU, VRAM, clock, power, disk and network tiles with sparklines](https://raw.githubusercontent.com/paone9/GlintBar/main/docs/hero.png)
 
+[![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d6)](#supported-hardware-and-platforms)
 [![PyPI](https://img.shields.io/pypi/v/glintbar)](https://pypi.org/project/glintbar/)
 [![CI](https://github.com/paone9/GlintBar/actions/workflows/ci.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml/badge.svg)](https://github.com/paone9/GlintBar/actions/workflows/codeql.yml)
@@ -43,7 +44,8 @@ below).
 
 ## Supported hardware and platforms
 
-Windows 10/11 only. It uses Win32 APIs, so there's no macOS or Linux build.
+**Windows 10 and 11 only.** It's built on Win32 APIs (the taskbar, DPI, and
+sensors), so there is no macOS or Linux build.
 
 CPU, RAM, disk and network work on any Windows PC, via `psutil`.
 
@@ -112,10 +114,9 @@ pip install -r requirements.txt
 python -m glintbar
 ```
 
-For a launch with no console window, double-click `start_glintbar.vbs` (or
-`start_glintbar.cmd` if Windows Script Host is blocked). To start it on login,
-drop a shortcut to the `glintbar` command (or to `start_glintbar.vbs`) into
-`shell:startup` (Win+R, then `shell:startup`).
+For a launch with no console window, use the installed `glintbar` command; from a
+clone, double-click `start_glintbar.cmd`. To start it on login, drop a shortcut to
+the `glintbar` command into `shell:startup` (Win+R, then `shell:startup`).
 
 Controls sit on the right: the gear opens settings and ✕ closes. While CSV
 logging is recording, a small red dot flashes on the bar; starting/stopping it

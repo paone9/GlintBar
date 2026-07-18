@@ -1404,7 +1404,7 @@ def main():
     t.start()
     _say("GlintBar starting (first launch can take a while on managed machines).\n"
          "Running attached to this console: closing it closes the bar. For a\n"
-         "detached bar use start_glintbar.cmd / start_glintbar.vbs (pythonw).")
+         "detached bar, use the installed `glintbar` command or start_glintbar.cmd.")
     webview.start()
 
 
