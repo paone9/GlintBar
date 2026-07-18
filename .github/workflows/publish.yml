@@ -1,7 +1,8 @@
 name: Publish to PyPI
 
-# Builds the package and publishes it to PyPI when a GitHub Release is published.
-# Uses PyPI Trusted Publishing (OIDC): no API token is stored in the repo.
+# Builds the package, publishes it to PyPI, and attaches Sigstore signatures to
+# the GitHub Release, when a Release is published. Uses OIDC throughout (PyPI
+# Trusted Publishing + keyless Sigstore signing): no API token is stored.
 # One-time setup on PyPI: add a trusted publisher for this repo/workflow.
 
 on:
@@ -16,7 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write   # mint the short-lived OIDC token PyPI trusts
+      id-token: write   # OIDC for PyPI Trusted Publishing and Sigstore signing
+      contents: write   # attach the signed artifacts to the GitHub release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
         with:
@@ -30,3 +32,13 @@ jobs:
           python -m build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+      - name: Sign the built artifacts with Sigstore
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: ./dist/*.tar.gz ./dist/*.whl
+      - name: Attach the signed artifacts to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release upload "${{ github.event.release.tag_name }}"
+          dist/*.whl dist/*.tar.gz dist/*.sigstore* --clobber
