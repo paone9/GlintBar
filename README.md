@@ -59,9 +59,11 @@ settings panel greys out anything your hardware can't provide.
 
 ### Privilege levels: it works without admin, and does more with it
 
-GlintBar itself never needs administrator rights, and it runs fine on its own. At
-normal privilege you get everything except real CPU temperature and fan speed:
-CPU, RAM, disk, network, GPU (per the table above), and the SYS Temp tile.
+GlintBar always runs unprivileged and never needs admin. As a normal user you get
+CPU, RAM, disk, network, GPU (per the table above), and the SYS Temp tile:
+everything except real CPU temperature and fan speed. Those two need kernel-level
+access, so they come from a separate helper that has admin (see below); GlintBar
+just reads what it exposes and stays unprivileged itself.
 
 The SYS Temp tile reads the ACPI thermal zone through a Windows performance
 counter, so it needs no admin. It's a generic zone though, so treat it as a rough
