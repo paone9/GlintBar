@@ -47,6 +47,13 @@ os.makedirs(LOG_DIR, exist_ok=True)
 SAMPLE_INTERVAL = 1.0        # seconds
 HISTORY_LEN = 60             # sparkline window (seconds)
 
+# Window titles: brand-cased for display, and also the keys used to find each
+# window (FindWindow), so always reference these constants, never a bare string.
+TITLE_BAR = "GlintBar"
+TITLE_SETTINGS = "GlintBar settings"
+TITLE_DETAIL = "GlintBar detail"
+TITLE_AWAY = "GlintBar away"
+
 METRIC_IDS = [
     # grouped for readability: system vitals -> GPU cluster -> I/O
     "cpu", "cpu_temp", "ram_pct", "sys_temp", "fan_rpm",
@@ -607,7 +614,7 @@ class Api:
     def save_config(self, cfg):
         store_config(cfg)
         for w in list(webview.windows):
-            if w.title == "glintbar settings":
+            if w.title == TITLE_SETTINGS:
                 try:
                     w.destroy()
                 except Exception:
@@ -629,7 +636,7 @@ class SettingsApi:
 
     def _close(self):
         for w in list(webview.windows):
-            if w.title == "glintbar settings":
+            if w.title == TITLE_SETTINGS:
                 try:
                     w.destroy()
                 except Exception:
@@ -864,7 +871,7 @@ def _overlay(user32, gap_l, gap_r, top, height, scale):
     """Float our window over the empty taskbar gap as a topmost, input-owning bar."""
     hwnd = 0
     for _ in range(60):
-        hwnd = user32.FindWindowW(None, "glintbar")
+        hwnd = user32.FindWindowW(None, TITLE_BAR)
         if hwnd:
             break
         time.sleep(0.1)
@@ -987,7 +994,7 @@ class DetailApi:
 
 
 def _detail_hwnd(user32):
-    return user32.FindWindowW(None, "glintbar detail")
+    return user32.FindWindowW(None, TITLE_DETAIL)
 
 
 def _show_detail(metric_id, chip_center_css):
@@ -1076,7 +1083,7 @@ AWAY = {"report": None}
 
 
 def _away_hwnd(user32):
-    return user32.FindWindowW(None, "glintbar away")
+    return user32.FindWindowW(None, TITLE_AWAY)
 
 
 def _log_away(rep):
@@ -1218,7 +1225,7 @@ def _fit_settings(css_h):
     growing upward so tall content stays on screen (never full-screen)."""
     st = EMBED_STATE
     u = st.get("user32") or ctypes.windll.user32
-    hwnd = u.FindWindowW(None, "glintbar settings")
+    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
     if not hwnd:
         return False
     u.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
@@ -1238,7 +1245,7 @@ def _fit_settings(css_h):
 
 
 def _open_settings():
-    if any(w.title == "glintbar settings" for w in webview.windows):
+    if any(w.title == TITLE_SETTINGS for w in webview.windows):
         return
     st = EMBED_STATE
     scale = st.get("scale", 1.0)
@@ -1249,7 +1256,7 @@ def _open_settings():
         x = round(_settings_x(st["user32"], int(W * scale)) / scale)   # pywebview wants DIP
         y = round(max(top - int(H * scale) - 8, 8) / scale)
     webview.create_window(
-        "glintbar settings", html=SETTINGS_HTML, js_api=SettingsApi(),
+        TITLE_SETTINGS, html=SETTINGS_HTML, js_api=SettingsApi(),
         width=W, height=H, x=x, y=y, resizable=True, on_top=True,
         background_color="#12161c",
     )
@@ -1371,7 +1378,7 @@ def main():
     x, y = round(x_phys / scale), round(y_phys / scale)
     api = Api()
     bar = webview.create_window(
-        "glintbar", html=HTML, js_api=api,
+        TITLE_BAR, html=HTML, js_api=api,
         width=width, height=height, x=x, y=y,
         min_size=(100, 1),      # allow a very thin bar (default min is 100 tall)
         frameless=True, on_top=True, resizable=True, easy_drag=True,
@@ -1379,14 +1386,14 @@ def main():
     )
     # hover-to-expand popup, created hidden; shown above the bar on chip hover
     webview.create_window(
-        "glintbar detail", html=DETAIL_HTML, js_api=DetailApi(),
+        TITLE_DETAIL, html=DETAIL_HTML, js_api=DetailApi(),
         width=320, height=180, min_size=(80, 1), hidden=True,
         frameless=True, on_top=True, resizable=False,
         background_color="#12161c",
     )
     # "while you were away" report popup, created hidden; shown on your return
     webview.create_window(
-        "glintbar away", html=AWAY_HTML, js_api=AwayApi(),
+        TITLE_AWAY, html=AWAY_HTML, js_api=AwayApi(),
         width=380, height=240, min_size=(80, 1), hidden=True,
         frameless=True, on_top=True, resizable=False,
         background_color="#12161c",
