@@ -127,6 +127,8 @@ so they survive reinstalls and stay out of the install folder.
 
 ## Settings
 
+<img src="https://raw.githubusercontent.com/paone9/GlintBar/main/docs/settings.png" alt="The GlintBar settings panel: metric picks with Essentials / GPU focus / All presets, size, taskbar alignment, toggles for sparklines, alerts, sound and away watch, and CSV logging" width="380">
+
 Open the gear to change:
 
 - Metrics: pick the ones you want, with presets for Essentials, GPU focus, or
