@@ -710,6 +710,7 @@ def _win32_setup(user32):
     user32.GetMonitorInfoW.argtypes = [wt.HMONITOR, ctypes.POINTER(MONITORINFO)]
     user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
     user32.GetWindowThreadProcessId.restype = wt.DWORD
+    user32.IsWindowVisible.argtypes = [wt.HWND]
 
 
 def _rect(user32, hwnd):
@@ -746,40 +747,53 @@ _SHELL_PROCS = {
 }
 
 
-def _foreground_is_fullscreen(user32):
-    """True when a real app covers the whole monitor the bar sits on
-    (fullscreen video, games, presentations), so the bar should get out of the way."""
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
-        return False
+_ENUM_PROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+
+def _fullscreen_on_bar_monitor(user32):
+    """True when any window covers the whole monitor the bar sits on (fullscreen
+    video, game, or slideshow) - even if it isn't the foreground window. This is
+    what catches a fullscreen app on the bar's screen while you're working on a
+    second monitor, which a foreground-only check misses."""
     our = EMBED_STATE.get("hwnd")
-    if our and hwnd == our:
+    if not our:
         return False
-    buf = ctypes.create_unicode_buffer(64)
-    user32.GetClassNameW(hwnd, buf, 64)
-    if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
-        return False   # the desktop / shell, not a fullscreen app
-    # ignore Windows shell surfaces (Start menu, Search, action centre, etc.) whose
-    # host windows briefly cover the monitor but aren't fullscreen apps
-    try:
-        pid = wt.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if psutil.Process(pid.value).name().lower() in _SHELL_PROCS:
-            return False
-    except Exception:
-        pass
-    MONITOR_DEFAULTTONEAREST = 2
-    fg_mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-    if our and fg_mon != user32.MonitorFromWindow(our, MONITOR_DEFAULTTONEAREST):
-        return False   # fullscreen app is on another screen; leave the bar alone
+    our_mon = user32.MonitorFromWindow(our, 2)     # MONITOR_DEFAULTTONEAREST
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
-    if not user32.GetMonitorInfoW(fg_mon, ctypes.byref(mi)):
+    if not user32.GetMonitorInfoW(our_mon, ctypes.byref(mi)):
         return False
-    m, r = mi.rcMonitor, wt.RECT()
-    user32.GetWindowRect(hwnd, ctypes.byref(r))
-    return (r.left <= m.left and r.top <= m.top
-            and r.right >= m.right and r.bottom >= m.bottom)
+    mon = mi.rcMonitor
+    hit = [False]
+
+    def _cb(hwnd, _):
+        if hit[0]:
+            return False
+        if hwnd == our or not user32.IsWindowVisible(hwnd):
+            return True
+        if user32.MonitorFromWindow(hwnd, 2) != our_mon:
+            return True                            # on another screen
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
+            return True                            # desktop / taskbar
+        r = wt.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        if not (r.left <= mon.left and r.top <= mon.top
+                and r.right >= mon.right and r.bottom >= mon.bottom):
+            return True                            # doesn't cover the whole monitor (e.g. maximised)
+        try:                                       # ignore shell surfaces (Start, Search, touch keyboard)
+            pid = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if psutil.Process(pid.value).name().lower() in _SHELL_PROCS:
+                return True
+        except Exception:
+            pass
+        hit[0] = True
+        return False                               # found one - stop enumerating
+
+    user32.EnumWindows(_ENUM_PROC(_cb), 0)
+    return hit[0]
 
 
 class LASTINPUTINFO(ctypes.Structure):
@@ -900,7 +914,7 @@ def _watcher():
         try:
             u = st["user32"]
             # hide while a fullscreen app (video, game, slideshow) owns the screen
-            fs = _foreground_is_fullscreen(u)
+            fs = _fullscreen_on_bar_monitor(u)
             if fs:
                 if not st.get("hidden_fs"):
                     u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
