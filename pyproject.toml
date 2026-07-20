@@ -24,6 +24,16 @@ dependencies = [
     "psutil>=7.2.2",
 ]
 
+[project.optional-dependencies]
+# Dev + CI tools, pinned to the tested versions (Dependabot bumps them). One
+# dependency source for the whole project: `pip install .[dev]`, no separate
+# requirements files.
+dev = [
+    "ruff==0.15.22",
+    "bandit==1.9.4",
+    "pytest==9.1.1",
+]
+
 [project.urls]
 Homepage = "https://github.com/paone9/GlintBar"
 Issues = "https://github.com/paone9/GlintBar/issues"

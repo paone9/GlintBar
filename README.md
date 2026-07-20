@@ -110,9 +110,12 @@ Or with `pipx` for a fully isolated install: `pipx install glintbar`.
 From a clone, for hacking on it:
 
 ```
-pip install -r requirements.txt
+pip install -e .
 python -m glintbar
 ```
+
+Contributor tooling (lint + tests) installs with `pip install -e .[dev]`; then
+run `ruff check .` and `pytest`.
 
 For a launch with no console window, use the installed `glintbar` command; from a
 clone, double-click `start_glintbar.cmd`. To start it on login, drop a shortcut to
@@ -236,8 +239,9 @@ only reads system metrics and writes `config.json` and logs to
 
 CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
 static analysis of the Python, the UI JavaScript, and the workflows themselves.
-GitHub Actions are pinned to commit SHAs and the two dependencies are pinned to
-their tested versions, so the build can't shift under you. An
+GitHub Actions are pinned to commit SHAs, and the runtime dependencies are
+declared in `pyproject.toml` with the minimum tested version and kept current by
+Dependabot. An
 [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 grades the repo's security posture (badge above). See the repo's Security tab, and
 [SECURITY.md](SECURITY.md) for exactly what the app touches.

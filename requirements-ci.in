@@ -1,5 +1,0 @@
-# CI-only tools (lint + security scan). Compile the hash-locked requirements-ci.txt:
-#   pip install pip-tools
-#   pip-compile --generate-hashes --output-file=requirements-ci.txt requirements-ci.in
-ruff
-bandit
