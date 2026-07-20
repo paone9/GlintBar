@@ -87,3 +87,9 @@ over the same collector. That's a big job.
 
 Distribution is source-first, no `.exe`. Corporate environments block unsigned
 binaries, and plain Python is easy to audit and needs no signing.
+
+The `away.csv` peak-temperature column was renamed `peak_sys_temp` -> `peak_temp`
+(it holds the CPU package temperature when a sensor provides one, not just the
+ACPI zone). The column position is unchanged; files written before the change
+keep the old header on append, so parsing old and new `away.csv` together by
+header name will show both labels for the same column.

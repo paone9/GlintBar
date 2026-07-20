@@ -73,6 +73,16 @@ _NV_QUERY = ["temperature.gpu", "utilization.gpu", "memory.used",
              "memory.total", "power.draw", "clocks.gr"]
 
 
+def _nv_num(x):
+    """nvidia-smi prints [N/A] for fields a GPU doesn't expose (power.draw and
+    clocks.gr are commonly [N/A] on laptop/older GPUs). Treat those as missing
+    rather than letting one bad field blank the whole GPU cluster."""
+    try:
+        return float(x.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def _nvidia_ok():
     try:
         o = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -100,12 +110,23 @@ class NvidiaProvider:
             o = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(_NV_QUERY),
                                 "--format=csv,noheader,nounits"],
                                capture_output=True, text=True, timeout=5, creationflags=_NOWIN)
-            p = [x.strip() for x in o.stdout.strip().split(",")]
-            temp, util, mu, mt, power, clock = (float(x) for x in p)
-            self._cache = {"gpu_temp": temp, "gpu_util": util,
-                           "gpu_mem_pct": (mu / mt * 100.0 if mt else 0.0),
-                           "gpu_power": power, "gpu_clock": clock,
-                           "gpu_mem_used": mu, "gpu_mem_total": mt}
+            line = o.stdout.strip().splitlines()[0]        # first GPU only
+            p = [_nv_num(x) for x in line.split(",")]
+            temp, util, mu, mt, power, clock = (p + [None] * 6)[:6]
+            d = {}
+            if temp is not None:
+                d["gpu_temp"] = temp
+            if util is not None:
+                d["gpu_util"] = util
+            if mu is not None and mt:
+                d["gpu_mem_pct"] = mu / mt * 100.0
+                d["gpu_mem_used"], d["gpu_mem_total"] = mu, mt
+            if power is not None:
+                d["gpu_power"] = power
+            if clock is not None:
+                d["gpu_clock"] = clock
+            if d:
+                self._cache = d
         except Exception:
             pass
         return self._cache
@@ -410,6 +431,20 @@ def _valid_metrics(metrics):
     return m or list(AVAILABLE)
 
 
+def _coerce_config(cfg):
+    """Numeric keys are hand-editable in config.json; a stringly "5" would raise
+    deep inside the away loop (whose bare except would then silently stop it).
+    Coerce them back to the default's type, falling back to the default."""
+    for k, v in DEFAULT_CONFIG.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        try:
+            cfg[k] = type(v)(cfg.get(k, v))
+        except (TypeError, ValueError):
+            cfg[k] = v
+    return cfg
+
+
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     try:
@@ -418,7 +453,7 @@ def load_config():
     except Exception:
         pass
     cfg["metrics"] = _valid_metrics(cfg.get("metrics"))
-    return cfg
+    return _coerce_config(cfg)
 
 
 CONFIG = load_config()
@@ -429,7 +464,7 @@ def store_config(cfg):
     global CONFIG, CONFIG_VERSION
     merged = {**DEFAULT_CONFIG, **(cfg or {})}
     merged["metrics"] = _valid_metrics(merged.get("metrics"))
-    CONFIG = merged
+    CONFIG = _coerce_config(merged)
     CONFIG_VERSION += 1
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -1123,7 +1158,7 @@ def _log_away(rep):
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new:
-                w.writerow(["when", "away_min", "peak_cpu", "peak_sys_temp",
+                w.writerow(["when", "away_min", "peak_cpu", "peak_temp",
                             "top_process", "top_cpu"])
             top = rep["offenders"][0] if rep["offenders"] else ("", 0)
             w.writerow([rep["when"], rep["duration_min"], rep["peak_cpu"],
@@ -1298,9 +1333,11 @@ _INSTANCE_MUTEX = None
 def _single_instance():
     """False if another GlintBar is already running (keeps the mutex for our lifetime)."""
     global _INSTANCE_MUTEX
-    k = ctypes.windll.kernel32
+    # use_last_error so ctypes captures GetLastError right at the CreateMutexW call,
+    # before any intervening FFI can clobber the thread's last-error.
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
     _INSTANCE_MUTEX = k.CreateMutexW(None, False, "GlintBar_singleton_mutex")
-    return k.GetLastError() != 183   # ERROR_ALREADY_EXISTS
+    return ctypes.get_last_error() != 183   # ERROR_ALREADY_EXISTS
 
 
 def _diag():

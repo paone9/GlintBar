@@ -56,7 +56,9 @@ async function tick(){
   if(list.length){
     for(const [name, c] of list){
       const d = document.createElement("div"); d.className = "proc";
-      d.innerHTML = `<span class="p">${name}</span><span class="c">${c}%</span>`;
+      const pn = document.createElement("span"); pn.className = "p"; pn.textContent = name;
+      const cc = document.createElement("span"); cc.className = "c"; cc.textContent = c + "%";
+      d.append(pn, cc);
       host.appendChild(d);
     }
   } else {
