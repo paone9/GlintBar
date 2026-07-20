@@ -1007,8 +1007,18 @@ class DetailApi:
                 "temp_unit": CONFIG.get("temp_unit", "C")}
 
 
+_DETAIL_HWND = None
+
+
 def _detail_hwnd(user32):
-    return user32.FindWindowW(None, TITLE_DETAIL)
+    # The detail window is created once and lives for the whole process, so its
+    # handle never changes. Resolve it a single time and reuse — the watchdog
+    # asks for it every 80ms. A zero result isn't cached, so it retries until the
+    # window exists.
+    global _DETAIL_HWND
+    if not _DETAIL_HWND:
+        _DETAIL_HWND = user32.FindWindowW(None, TITLE_DETAIL)
+    return _DETAIL_HWND
 
 
 def _show_detail(metric_id, chip_center_css):
@@ -1068,13 +1078,19 @@ def _detail_watchdog():
     stuck open. Polling the real cursor position is robust, and counting the
     popup's own rect as "inside" lets you move onto it to read it. A 12px
     margin bridges the small gap between the bar and the popup.
+
+    The gate is the popup's *actual* visibility, not our own metric flag: if a
+    hide ever no-ops (a missed FindWindow, or the DOM path clearing state while
+    the window is still up) the next tick still sees a visible window and retries,
+    so the popup can never be stranded on screen.
     """
     u = ctypes.windll.user32
     pt = wt.POINT()
     outside = 0
     while True:
         time.sleep(0.08)
-        if not DETAIL.get("metric"):
+        hwnd = _detail_hwnd(u)
+        if not hwnd or not u.IsWindowVisible(hwnd):
             outside = 0
             continue
         try:
