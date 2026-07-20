@@ -1,0 +1,4 @@
+# Keep dev-only files out of the source distribution. The wheel is already
+# scoped to the glintbar package (pyproject: packages = ["glintbar"]); this
+# does the same for the sdist so neither published artifact carries tests.
+prune tests

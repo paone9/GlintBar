@@ -1,0 +1,6 @@
+# Test-only tool (unit tests run on Windows CI, since the module imports
+# Windows-only stdlib and probes hardware at import). Compile the hash-locked
+# requirements-test.txt:
+#   pip install pip-tools
+#   pip-compile --generate-hashes --output-file=requirements-test.txt requirements-test.in
+pytest
