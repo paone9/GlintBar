@@ -421,6 +421,7 @@ DEFAULT_CONFIG = {
     "away_watch": True,            # watch for busy processes while you're away
     "away_after_min": 5,           # idle minutes before "away" starts
     "away_cpu_pct": 25,            # only report if CPU stayed above this while away
+    "away_hot_c": 85,              # ...or if it ran at least this hot for a while
     "temp_unit": "C",              # "C" or "F"; display only, edit in config.json (no UI toggle)
     "hotkey": "ctrl+alt+g",        # global hide/show hotkey; "" disables it
 }
@@ -864,6 +865,12 @@ def _top_cpu_processes(n=5):
     return out[:n]
 
 
+# Windows' own memory bookkeeping routinely holds the largest RSS on the box.
+# Naming it tells you nothing you can act on, the same reason the idle process is
+# excluded from CPU attribution.
+_MEM_SKIP = {"memory compression", "memcompression", "system", "registry"}
+
+
 def _top_mem_process():
     """(name, MB) of the largest resident process right now. Sampled once, when you
     get back: whatever is still holding memory then is the one worth naming. If it
@@ -871,12 +878,15 @@ def _top_mem_process():
     report. Returns ("", 0) if nothing can be read."""
     name, rss = "", 0
     for p in psutil.process_iter(["name", "memory_info"]):
+        n = p.info["name"] or ""
+        if n.lower() in _MEM_SKIP:
+            continue
         try:
             r = p.info["memory_info"].rss
         except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, TypeError):
             continue
         if r > rss:
-            name, rss = p.info["name"] or "", r
+            name, rss = n, r
     return name, round(rss / (1024 * 1024))
 
 
@@ -1160,7 +1170,7 @@ def _detail_watchdog():
 
 
 AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between checks
-AWAY_HOT_C = 85              # a run this hot is worth reporting on its own
+AWAY_WINDOW = min(AWAY_POLL, HISTORY_LEN)   # the collector only keeps this many seconds
 AWAY_RAM_RISE = 25           # points of RAM growth that, left high, look like a leak
 AWAY_RAM_HIGH = 80           # ...and only if it ended up above this
 AWAY = {"report": None}
@@ -1179,16 +1189,20 @@ def _median(vals):
 def _recent(hist, key):
     """The one-second samples the collector already recorded since the last away
     poll. Reading only the latest value saw one second in every AWAY_POLL — about
-    7% of the away period — so brief spikes were missed and the peak understated."""
-    return [v for v in (hist.get(key) or [])[-AWAY_POLL:] if v is not None]
+    7% of the away period — so brief spikes were missed and the peak understated.
+
+    The collector keeps HISTORY_LEN seconds, so with a poll interval longer than
+    that (GLINTBAR_AWAY_POLL is a user knob) only the most recent HISTORY_LEN
+    seconds of each interval survive to be read — hence AWAY_WINDOW."""
+    return [v for v in (hist.get(key) or [])[-AWAY_WINDOW:] if v is not None]
 
 
 def _away_hwnd(user32):
     return user32.FindWindowW(None, TITLE_AWAY)
 
 
-AWAY_COLS = ["when", "away_min", "busy_min", "busy_pct", "typical_cpu",
-             "peak_cpu", "peak_temp",
+AWAY_COLS = ["when", "away_min", "observed_min", "busy_min", "busy_pct", "typical_cpu",
+             "peak_cpu", "peak_temp", "temp_src",
              "ram_from", "ram_to", "ram_peak", "mem_top", "mem_top_mb",
              "proc1", "proc1_pct", "proc1_min",
              "proc2", "proc2_pct", "proc2_min",
@@ -1203,16 +1217,18 @@ def _log_away(rep):
         if os.path.exists(path):
             with open(path, newline="", encoding="utf-8") as f:
                 head = next(csv.reader(f), [])
-            if head != AWAY_COLS:
+            if head and head != AWAY_COLS:      # an empty file needs no rescuing
                 os.replace(path, os.path.join(
                     LOG_DIR, "away-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".csv"))
-        new = not os.path.exists(path)
+        # an existing-but-empty file still needs the header written
+        new = not os.path.exists(path) or os.path.getsize(path) == 0
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new:
                 w.writerow(AWAY_COLS)
-            row = [rep["when"], rep["duration_min"], rep["busy_min"], rep["busy_pct"],
-                   rep["typical_cpu"], rep["peak_cpu"], rep["peak_temp"],
+            row = [rep["when"], rep["duration_min"], rep["observed_min"],
+                   rep["busy_min"], rep["busy_pct"],
+                   rep["typical_cpu"], rep["peak_cpu"], rep["peak_temp"], rep["temp_src"],
                    rep["ram_from"], rep["ram_to"], rep["ram_peak"],
                    rep["mem_top"], rep["mem_top_mb"]]
             for i in range(3):
@@ -1263,8 +1279,14 @@ def _finalize_away(stats):
     AWAY["report"] = {
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "duration_min": round((time.time() - stats["start"]) / 60, 1),
+        # Time actually watched. The loop sleeps between polls, so if the machine
+        # suspends mid-away the wall clock keeps running while sampling stops —
+        # busy_pct is a share of what was observed, and saying so keeps the two
+        # from contradicting each other.
+        "observed_min": round(stats["samples"] * AWAY_POLL / 60.0, 1),
         "busy_min": round(stats["busy_samples"] * AWAY_POLL / 60.0, 1),
         "busy_pct": round(100.0 * stats["busy_samples"] / stats["samples"], 1),
+        "temp_src": "cpu" if stats["temp_key"] == "cpu_temp" else "sys",
         "typical_cpu": round(_median(stats["cpu_avgs"]), 1),
         "peak_cpu": round(peak_cpu, 1),
         "peak_temp": round(peak_temp, 1),
@@ -1315,6 +1337,7 @@ def away_loop():
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
                              "proc_acc": {}, "cpu_avgs": [], "hot_samples": 0,
                              "ram_first": None, "ram_last": 0.0, "ram_peak": 0.0,
+                             "temp_key": None,
                              "busy_samples": 0, "samples": 0}
                 snap = collector.snapshot()
                 latest, hist = snap["latest"], snap["hist"]
@@ -1324,7 +1347,13 @@ def away_loop():
                 # "Busy" means sustained, so gate on the interval average — which is
                 # also the basis the per-process numbers use, so they line up.
                 cpu_avg = sum(cpu_win) / len(cpu_win) if cpu_win else cpu_peak
-                temp_key = "cpu_temp" if latest.get("cpu_temp") else "sys_temp"
+                if stats["temp_key"] is None:
+                    # Fix the sensor for the whole away period. If one drops out midway
+                    # (LHM closed, an HWiNFO read fails) the peak would otherwise be a
+                    # max across two scales — CPU package vs the cooler ACPI zone —
+                    # counted against one threshold.
+                    stats["temp_key"] = "cpu_temp" if latest.get("cpu_temp") else "sys_temp"
+                temp_key = stats["temp_key"]
                 temp_win = _recent(hist, temp_key)
                 temp = max(temp_win) if temp_win else (latest.get(temp_key) or 0.0)
                 stats["peak_cpu"] = max(stats["peak_cpu"], cpu_peak)
@@ -1340,7 +1369,7 @@ def away_loop():
                     ram_win = _recent(hist, "ram_pct")
                     stats["ram_peak"] = max(stats["ram_peak"], max(ram_win) if ram_win else ram)
                 stats["samples"] += 1
-                if temp >= AWAY_HOT_C:
+                if temp >= CONFIG.get("away_hot_c", 85):
                     stats["hot_samples"] += 1         # how long it ran hot, not just how hot
                 if cpu_avg >= CONFIG.get("away_cpu_pct", 25):
                     stats["busy_samples"] += 1

@@ -172,6 +172,14 @@ def test_recent_returns_the_whole_window_not_one_sample():
     assert max(w) == float(n * 3 - 1)     # so a spike in the window is caught
 
 
+def test_recent_never_exceeds_the_collector_history():
+    # the collector keeps only HISTORY_LEN seconds, so a longer poll interval must
+    # not silently claim to have seen more than that
+    assert gm.AWAY_WINDOW <= gm.HISTORY_LEN
+    hist = {"cpu": [float(i) for i in range(gm.HISTORY_LEN * 3)]}
+    assert len(gm._recent(hist, "cpu")) <= gm.HISTORY_LEN
+
+
 def test_recent_filters_none_values():
     assert gm._recent({"cpu": [1.0, None, 3.0]}, "cpu") == [1.0, 3.0]
 

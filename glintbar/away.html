@@ -33,7 +33,7 @@
   <div class="sub" id="sub">—</div>
   <div class="row"><span class="k">Busy</span><span class="v" id="busy">—</span></div>
   <div class="row"><span class="k">CPU</span><span class="v" id="cpu">—</span></div>
-  <div class="row"><span class="k">Peak temp</span><span class="v" id="temp">—</span></div>
+  <div class="row"><span class="k" id="tempk">Peak temp</span><span class="v" id="temp">—</span></div>
   <div class="row"><span class="k">RAM</span><span class="v" id="ram">—</span></div>
   <div class="lbl">Busiest while busy</div>
   <div id="procs"></div>
@@ -52,12 +52,18 @@ function dur(m){
 async function tick(){
   let r; try{ r = await window.pywebview.api.get(); }catch(e){ return; }
   if(!r) return;
-  document.getElementById("sub").textContent = `${r.when}, away for ${dur(r.duration_min)}`;
+  // If the machine slept, wall-clock away time and watched time diverge — show both
+  // rather than quoting a share of one against the other.
+  const gap = r.observed_min < r.duration_min * 0.9;
+  document.getElementById("sub").textContent =
+      `${r.when}, away for ${dur(r.duration_min)}` + (gap ? ` · watched ${dur(r.observed_min)}` : "");
   document.getElementById("busy").textContent =
-      `${dur(r.busy_min)} of it (${r.busy_pct}%)`;
+      `${dur(r.busy_min)} of ${dur(r.observed_min)} (${r.busy_pct}%)`;
   const cpu = document.getElementById("cpu");
   cpu.textContent = `${r.typical_cpu}% typical · ${r.peak_cpu}% peak`;
   cpu.className = "v" + (r.peak_cpu >= 60 ? " hot" : "");
+  document.getElementById("tempk").textContent =
+      r.temp_src === "cpu" ? "Peak CPU temp" : "Peak system temp";
   const temp = document.getElementById("temp");
   temp.textContent = r.peak_temp ? r.peak_temp + " °C" : "n/a";
   temp.className = "v" + (r.peak_temp >= 90 ? " hot" : "");
