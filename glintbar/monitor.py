@@ -916,7 +916,11 @@ def _place(css_width):
     st = EMBED_STATE
     if not st.get("hwnd"):
         return False
-    if st.get("user_hidden"):        # hidden by the hotkey; leave it hidden
+    # Hidden by the hotkey, or by a fullscreen app owning the screen. This runs from
+    # the bar's own JS (an alert appearing, the logging dot, a width drift), which
+    # keeps ticking while the window is hidden — without this it would re-show the
+    # bar over the fullscreen app.
+    if st.get("user_hidden") or st.get("hidden_fs"):
         return True
     u, scale = st["user32"], st["scale"]
     gap_l, gap_r, top, h = st["gap_l"], st["gap_r"], st["top"], st["height"]
@@ -977,10 +981,13 @@ def _watcher():
             # hide while a fullscreen app (video, game, slideshow) owns the screen
             fs = _fullscreen_on_bar_monitor(u)
             if fs:
-                if not st.get("hidden_fs"):
+                # Gate on whether the bar is actually visible rather than on our own
+                # flag: if anything else re-showed it, the flag alone would say
+                # "already handled" and leave it stranded over the fullscreen app.
+                if u.IsWindowVisible(st["hwnd"]):
                     u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
                     _hide_detail()
-                    st["hidden_fs"] = True
+                st["hidden_fs"] = True
                 continue
             if st.get("hidden_fs"):
                 st["hidden_fs"] = False
@@ -1028,8 +1035,8 @@ def _toggle_hidden():
     if hide:
         u.ShowWindow(st["hwnd"], SW_HIDE)
         _hide_detail()
-    else:
-        u.ShowWindow(st["hwnd"], SW_SHOW)
+    elif not st.get("hidden_fs"):     # a fullscreen app still owns the screen;
+        u.ShowWindow(st["hwnd"], SW_SHOW)   # the watcher brings it back on exit
         _place(st.get("last_css"))
 
 
