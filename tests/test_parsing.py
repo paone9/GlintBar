@@ -7,7 +7,44 @@ LibreHardwareMonitor sensor selection, the hotkey parser, and metric validation.
 They import glintbar.monitor, which probes hardware at import time and pulls in
 Windows-only modules (winsound, ctypes.wintypes) -> this suite runs on Windows CI.
 """
+import types
+
 import glintbar.monitor as gm
+
+
+# --- NvidiaProvider.sample: the poll throttle must survive a failing GPU ---
+
+def test_nvidia_keeps_throttling_when_the_gpu_is_failing(monkeypatch):
+    """A failing GPU empties the cache so the tiles blank instead of showing stale
+    numbers as live. The throttle must not be conditional on that cache being
+    non-empty, or every 1s sampler tick spawns nvidia-smi — and a wedged driver
+    that hangs would then stall the sampler thread on each 5s timeout.
+    """
+    clock = {"t": 1000.0}
+    spawns = []
+
+    class _Sub:
+        CREATE_NO_WINDOW = 0
+
+        @staticmethod
+        def run(*a, **k):
+            spawns.append(1)
+            raise OSError("nvidia-smi is not answering")
+
+    monkeypatch.setattr(gm, "time", types.SimpleNamespace(
+        monotonic=lambda: clock["t"], sleep=lambda _s: None))
+    monkeypatch.setattr(gm, "subprocess", _Sub)
+
+    p = gm.NvidiaProvider()
+    p._cache = {"gpu_temp": 61.0}          # a good reading to start from
+    for _ in range(10):                    # ten sampler ticks, one second apart
+        clock["t"] += 1.0
+        p.sample()
+
+    # two seconds apart while it still hopes, then the long backoff — not one per tick
+    assert len(spawns) == 3
+    assert p._fails >= p._MAX_FAILS
+    assert p.sample() == {}                # blank, rather than the stale 61.0
 
 
 # --- _nv_num: nvidia-smi field parse, tolerant of [N/A] (regression guard, #1) ---

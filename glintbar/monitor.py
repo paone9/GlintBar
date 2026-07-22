@@ -95,9 +95,9 @@ def _nvidia_ok():
 class NvidiaProvider:
     kind = "nvidia"
     metrics = ["gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock"]
-    _INTERVAL = 2.0     # only spawn nvidia-smi this often; cache in between
-
-    _MAX_FAILS = 3      # ~6s of nothing before the tiles go blank rather than lie
+    _INTERVAL = 2.0         # only spawn nvidia-smi this often; cache in between
+    _FAIL_INTERVAL = 30.0   # ...and back well off once it clearly isn't answering
+    _MAX_FAILS = 3          # ~6s of nothing before the tiles go blank rather than lie
 
     def __init__(self):
         self._cache = {}
@@ -106,7 +106,13 @@ class NvidiaProvider:
 
     def sample(self):
         now = time.monotonic()
-        if self._cache and now - self._t < self._INTERVAL:
+        # Throttle on elapsed time alone. Requiring a non-empty cache here meant a
+        # failing GPU — whose cache is deliberately emptied so the tiles don't show
+        # stale numbers as live — spawned nvidia-smi on every 1s sampler tick, and a
+        # wedged driver that hangs rather than fails would then stall that thread on
+        # the 5s timeout, taking CPU/RAM/disk/net down with it.
+        interval = self._INTERVAL if self._fails < self._MAX_FAILS else self._FAIL_INTERVAL
+        if now - self._t < interval:
             return self._cache      # reuse recent reading, no subprocess
         self._t = now
         try:
