@@ -142,6 +142,29 @@ def test_lhm_no_data_is_empty():
     assert _lhm(None).sample() == {}
 
 
+# --- _recent: the away poll's one-second sample window ---
+
+def test_recent_returns_the_whole_window_not_one_sample():
+    n = gm.AWAY_POLL
+    hist = {"cpu": [float(i) for i in range(n * 3)]}
+    w = gm._recent(hist, "cpu")
+    assert len(w) == n                    # the interval, not a single reading
+    assert max(w) == float(n * 3 - 1)     # so a spike in the window is caught
+
+
+def test_recent_filters_none_values():
+    assert gm._recent({"cpu": [1.0, None, 3.0]}, "cpu") == [1.0, 3.0]
+
+
+def test_recent_missing_or_empty_key():
+    assert gm._recent({}, "cpu") == []
+    assert gm._recent({"cpu": None}, "cpu") == []
+
+
+def test_recent_shorter_history_than_window():
+    assert gm._recent({"cpu": [5.0, 7.0]}, "cpu") == [5.0, 7.0]
+
+
 # --- _parse_hotkey: modifier + key -> virtual-key codes ---
 
 def test_hotkey_ctrl_alt_g():

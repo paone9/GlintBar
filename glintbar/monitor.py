@@ -1147,6 +1147,13 @@ AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between 
 AWAY = {"report": None}
 
 
+def _recent(hist, key):
+    """The one-second samples the collector already recorded since the last away
+    poll. Reading only the latest value saw one second in every AWAY_POLL — about
+    7% of the away period — so brief spikes were missed and the peak understated."""
+    return [v for v in (hist.get(key) or [])[-AWAY_POLL:] if v is not None]
+
+
 def _away_hwnd(user32):
     return user32.FindWindowW(None, TITLE_AWAY)
 
@@ -1237,13 +1244,21 @@ def away_loop():
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
                              "proc_peak": {}, "busy_samples": 0, "samples": 0}
-                snap = collector.snapshot()["latest"]
-                cpu = snap.get("cpu") or 0.0
-                temp = snap.get("cpu_temp") or snap.get("sys_temp") or 0.0
-                stats["peak_cpu"] = max(stats["peak_cpu"], cpu)
+                snap = collector.snapshot()
+                latest, hist = snap["latest"], snap["hist"]
+                cpu_win = _recent(hist, "cpu")
+                # Headline peak: the highest of every second in the interval.
+                cpu_peak = max(cpu_win) if cpu_win else (latest.get("cpu") or 0.0)
+                # "Busy" means sustained, so gate on the interval average — which is
+                # also the basis the per-process numbers use, so they line up.
+                cpu_avg = sum(cpu_win) / len(cpu_win) if cpu_win else cpu_peak
+                temp_key = "cpu_temp" if latest.get("cpu_temp") else "sys_temp"
+                temp_win = _recent(hist, temp_key)
+                temp = max(temp_win) if temp_win else (latest.get(temp_key) or 0.0)
+                stats["peak_cpu"] = max(stats["peak_cpu"], cpu_peak)
                 stats["peak_temp"] = max(stats["peak_temp"], temp)
                 stats["samples"] += 1
-                if cpu >= CONFIG.get("away_cpu_pct", 25):
+                if cpu_avg >= CONFIG.get("away_cpu_pct", 25):
                     stats["busy_samples"] += 1
                     by_name = {}                      # sum same-named procs this sample
                     for name, c in tops:
