@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 import winsound
 from collections import deque
@@ -258,6 +259,9 @@ LHM_PORT = int(os.environ.get("GLINTBAR_LHM_PORT", "8085"))
 
 
 def _num(s):
+    """Scrape a number out of a sensor string. Only for quantities where three
+    decimal places don't occur — temperatures, fan RPM — because that's what makes
+    the comma rule below decidable. Don't point it at voltages or power."""
     if not isinstance(s, str):
         try:
             return float(s)
@@ -446,6 +450,7 @@ DEFAULT_CONFIG = {
     "away_after_min": 5,           # idle minutes before "away" starts
     "away_cpu_pct": 25,            # only report if CPU stayed above this while away
     "away_hot_c": 85,              # ...or if it ran at least this hot for a while
+    "away_report_after_min": 5,    # shorter absences than this aren't worth a window
     "temp_unit": "C",              # "C" or "F"; display only, edit in config.json (no UI toggle)
     "hotkey": "ctrl+alt+g",        # global hide/show hotkey; "" disables it
 }
@@ -1259,8 +1264,8 @@ def _show_away():
     if not hwnd:
         return
     scale = st.get("scale", 1.0)
-    # ~283px of content with the "busy" and "RAM" rows; the rest is slack so a font
-    # fallback or DPI rounding can't clip the buttons (actions sit at margin-top:auto)
+    # Deliberately a constant size. Sizing to content made the popup jump around
+    # between reports; a long list scrolls inside instead.
     W, H = int(380 * scale), int(300 * scale)
     sw = u.GetSystemMetrics(0)
     x, y = (sw - W) // 2, int(70 * scale)
@@ -1270,17 +1275,24 @@ def _show_away():
 def _finalize_away(stats):
     if not stats or stats["samples"] == 0:
         return
+    duration_min = (time.time() - stats["start"]) / 60.0
+    # You switched this on to be told what happened while you were away, so it says
+    # so every time instead of deciding on your behalf what deserved a mention.
+    # "Nothing stood out" is an answer; silence can't be told apart from not
+    # watching, or from being broken. The only bar is that the absence was long
+    # enough to be worth a window.
+    if duration_min < CONFIG.get("away_report_after_min", 5):
+        return
     peak_cpu, peak_temp = stats["peak_cpu"], stats["peak_temp"]
-    # Report a sustained spell, not a momentary spike — of load or of heat. Both
-    # criteria are durations now, so one noisy sensor reading can't force a report.
     min_busy = max(3, round(60 / AWAY_POLL))
     ram_first = stats["ram_first"] if stats["ram_first"] is not None else stats["ram_last"]
     ram_last = stats["ram_last"]
     # A machine can be quiet and cool all night and still be in trouble: memory that
     # climbs and stays up is the one soak-test symptom this window is placed to catch.
     leaky = (ram_last - ram_first) >= AWAY_RAM_RISE and ram_last >= AWAY_RAM_HIGH
-    if stats["busy_samples"] < min_busy and stats["hot_samples"] < min_busy and not leaky:
-        return
+    # Shown either way; the sound is reserved for something that warrants attention.
+    notable = (stats["busy_samples"] >= min_busy or stats["hot_samples"] >= min_busy
+               or leaky)
     # Rank by CPU time used (share x intervals), not by best moment: a process that
     # sat at 8% for hours matters more than one that touched 10% once.
     top = sorted(stats["proc_acc"].items(), key=lambda kv: -kv[1][0])[:3]
@@ -1291,7 +1303,7 @@ def _finalize_away(stats):
     mem_name, mem_mb = _top_mem_process() if (ram_last - ram_first) >= 10 else ("", 0)
     AWAY["report"] = {
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "duration_min": round((time.time() - stats["start"]) / 60, 1),
+        "duration_min": round(duration_min, 1),
         # Time actually watched. The loop sleeps between polls, so if the machine
         # suspends mid-away the wall clock keeps running while sampling stops —
         # busy_pct is a share of what was observed, and saying so keeps the two
@@ -1311,7 +1323,7 @@ def _finalize_away(stats):
         "offenders": offenders,
     }
     _log_away(AWAY["report"])
-    if CONFIG.get("sound", True):
+    if CONFIG.get("sound", True) and notable:
         try:
             winsound.MessageBeep(0x30)
         except Exception:
@@ -1466,15 +1478,20 @@ def _fit_settings(css_h):
 def _settings_failsafe():
     """If the fit never reports back — a script error, a webview that didn't run it
     — bring the panel on screen at its default size rather than leaving it parked
-    off screen where it can't be found."""
-    time.sleep(1.5)
-    u = EMBED_STATE.get("user32") or ctypes.windll.user32
-    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
-    if not hwnd:
-        return
-    r = wt.RECT()
-    if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left <= SETTINGS_OFFSCREEN // 2:
-        _place_settings(u, hwnd, r.right - r.left, r.bottom - r.top)
+    off screen where it can't be found. Guarded, because a thread that dies here
+    takes its traceback to a stderr that doesn't exist under pythonw and leaves
+    exactly the parked window it was written to rescue."""
+    try:
+        time.sleep(1.5)
+        u = EMBED_STATE.get("user32") or ctypes.windll.user32
+        hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+        if not hwnd:
+            return
+        r = wt.RECT()
+        if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left <= SETTINGS_OFFSCREEN // 2:
+            _place_settings(u, hwnd, r.right - r.left, r.bottom - r.top)
+    except Exception:
+        pass
 
 
 def _close_settings():
@@ -1578,13 +1595,36 @@ def _say(msg):
         pass
 
 
-def main():
+def _alert(msg, error=False):
+    """Say something the user must not miss. start_glintbar.cmd runs pythonw, which
+    has no console for a print to land in, so a refused or failed launch looked
+    exactly like a successful one — the window simply never appeared. Falls back to
+    a message box whenever there's no console to write to."""
+    try:
+        if sys.stdout:
+            print(msg, flush=True)
+    except Exception:
+        pass
+    try:
+        # A launch via start_glintbar.cmd has no console window, and may still hold
+        # an inherited stdout handle that goes nowhere visible — so the box is keyed
+        # on there being no console to read, not on stdout being absent.
+        k = ctypes.windll.kernel32
+        k.GetConsoleWindow.restype = wt.HWND    # _win32_setup hasn't run yet
+        if not k.GetConsoleWindow():
+            # MB_ICONERROR / MB_ICONINFORMATION
+            ctypes.windll.user32.MessageBoxW(0, msg, TITLE_BAR, 0x10 if error else 0x40)
+    except Exception:
+        pass
+
+
+def _run():
     if "--diag" in sys.argv:
         _diag()
         return
     if not _single_instance():
-        _say("GlintBar is already running (this launch did nothing). "
-             "Close it from the bar's X button first, or just use the running one.")
+        _alert("GlintBar is already running, so there's nothing to start.\n\n"
+               "To restart it, close it with the X on the bar and launch again.")
         return
     user32 = ctypes.windll.user32
     # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
@@ -1659,6 +1699,17 @@ def main():
          "Running attached to this console: closing it closes the bar. For a\n"
          "detached bar, use the installed `glintbar` command or start_glintbar.cmd.")
     webview.start()
+
+
+def main():
+    """Entry point. Anything that goes wrong before the bar appears would otherwise
+    kill a pythonw launch in complete silence, which is indistinguishable from the
+    launcher having worked."""
+    try:
+        _run()
+    except Exception:
+        _alert("GlintBar couldn't start.\n\n" + traceback.format_exc(limit=4), error=True)
+        raise
 
 
 if __name__ == "__main__":

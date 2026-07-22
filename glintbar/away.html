@@ -17,6 +17,9 @@
   .v.hot{ color:var(--crit); }
   .lbl{ font-size:10px; text-transform:uppercase; letter-spacing:.06em;
         color:var(--dim); margin:10px 0 4px; }
+  /* takes the leftover room so the buttons stay put, and scrolls when there
+     are more entries than fit rather than resizing the window */
+  #procs{ flex:1 1 auto; min-height:0; overflow-y:auto; }
   .proc{ display:flex; justify-content:space-between; font-size:12px; padding:2px 0;
          border-top:1px solid #ffffff10; }
   .proc .p{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
