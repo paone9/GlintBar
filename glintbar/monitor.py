@@ -675,12 +675,7 @@ class SettingsApi:
                 "available": AVAILABLE, "gpu_kind": GPU_KIND}
 
     def _close(self):
-        for w in list(webview.windows):
-            if w.title == TITLE_SETTINGS:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+        _close_settings()
 
     def save_config(self, cfg):
         store_config(cfg)
@@ -1429,9 +1424,22 @@ def _settings_x(u, W):
     return max(x, 8)
 
 
+# The panel is born off screen so its fit-to-content pass isn't a visible stutter:
+# it would otherwise appear at a placeholder height and immediately jump to its
+# real one, moving as well as resizing (the y depends on the height).
+SETTINGS_OFFSCREEN = -32000
+
+
+def _place_settings(u, hwnd, W, H):
+    """Float the settings panel just above the bar, growing upward."""
+    screen_h = u.GetSystemMetrics(1)                 # SM_CYSCREEN
+    top = EMBED_STATE.get("top", screen_h)
+    u.MoveWindow(hwnd, _settings_x(u, W), max(top - H - 8, 8), W, H, True)
+
+
 def _fit_settings(css_h):
-    """Size the settings window to its content and float it just above the bar,
-    growing upward so tall content stays on screen (never full-screen)."""
+    """Size the settings window to its content and bring it on screen, capped so
+    tall content stays visible (never full-screen)."""
     st = EMBED_STATE
     u = st.get("user32") or ctypes.windll.user32
     hwnd = u.FindWindowW(None, TITLE_SETTINGS)
@@ -1443,31 +1451,53 @@ def _fit_settings(css_h):
     u.GetClientRect(hwnd, ctypes.byref(cr))
     chrome_h = (wr.bottom - wr.top) - cr.bottom      # title bar + borders
     W = wr.right - wr.left
-    screen_h = u.GetSystemMetrics(1)                 # SM_CYSCREEN
+    screen_h = u.GetSystemMetrics(1)
     H = min(int(round(css_h * scale)) + chrome_h + 2, int(screen_h * 0.92))
-    top = st.get("top", screen_h)
-    x = _settings_x(u, W)
-    y = max(top - H - 8, 8)
-    u.MoveWindow(hwnd, x, y, W, H, True)
+    _place_settings(u, hwnd, W, H)
     return True
 
 
-def _open_settings():
-    if any(w.title == TITLE_SETTINGS for w in webview.windows):
+def _settings_failsafe():
+    """If the fit never reports back — a script error, a webview that didn't run it
+    — bring the panel on screen at its default size rather than leaving it parked
+    off screen where it can't be found."""
+    time.sleep(1.5)
+    u = EMBED_STATE.get("user32") or ctypes.windll.user32
+    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    if not hwnd:
         return
-    st = EMBED_STATE
-    scale = st.get("scale", 1.0)
+    r = wt.RECT()
+    if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left <= SETTINGS_OFFSCREEN // 2:
+        _place_settings(u, hwnd, r.right - r.left, r.bottom - r.top)
+
+
+def _close_settings():
+    """Shut the settings panel if it's open. True if there was one to shut."""
+    found = False
+    for w in list(webview.windows):
+        if w.title == TITLE_SETTINGS:
+            found = True
+            try:
+                w.destroy()
+            except Exception:
+                pass
+    return found
+
+
+def _open_settings():
+    # The gear toggles. Clicking it while the panel is up closes it, rather than
+    # looking broken by doing nothing.
+    if _close_settings():
+        return
     W, H = 360, 480                       # logical (DIP); JS calls fit() to trim to content
-    x = y = None
-    if st.get("hwnd"):
-        top = st.get("top") or 0
-        x = round(_settings_x(st["user32"], int(W * scale)) / scale)   # pywebview wants DIP
-        y = round(max(top - int(H * scale) - 8, 8) / scale)
+    # Off screen, not hidden: a hidden webview may not lay out, and then the
+    # scrollHeight the fit relies on comes back wrong. _fit_settings brings it in.
     webview.create_window(
         TITLE_SETTINGS, html=SETTINGS_HTML, js_api=SettingsApi(),
-        width=W, height=H, x=x, y=y, resizable=True, on_top=True,
+        width=W, height=H, x=SETTINGS_OFFSCREEN, y=0, resizable=True, on_top=True,
         background_color="#12161c",
     )
+    threading.Thread(target=_settings_failsafe, daemon=True).start()
 
 
 _INSTANCE_MUTEX = None
