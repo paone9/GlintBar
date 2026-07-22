@@ -864,6 +864,22 @@ def _top_cpu_processes(n=5):
     return out[:n]
 
 
+def _top_mem_process():
+    """(name, MB) of the largest resident process right now. Sampled once, when you
+    get back: whatever is still holding memory then is the one worth naming. If it
+    had already exited the memory would have come back and there'd be nothing to
+    report. Returns ("", 0) if nothing can be read."""
+    name, rss = "", 0
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            r = p.info["memory_info"].rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, TypeError):
+            continue
+        if r > rss:
+            name, rss = p.info["name"] or "", r
+    return name, round(rss / (1024 * 1024))
+
+
 EMBED_STATE = {}
 HWND_TOPMOST = -1
 SWP_NOMOVE_SIZE_ACT = 0x0001 | 0x0002 | 0x0010   # NOSIZE|NOMOVE|NOACTIVATE
@@ -1145,6 +1161,8 @@ def _detail_watchdog():
 
 AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between checks
 AWAY_HOT_C = 85              # a run this hot is worth reporting on its own
+AWAY_RAM_RISE = 25           # points of RAM growth that, left high, look like a leak
+AWAY_RAM_HIGH = 80           # ...and only if it ended up above this
 AWAY = {"report": None}
 
 
@@ -1171,6 +1189,7 @@ def _away_hwnd(user32):
 
 AWAY_COLS = ["when", "away_min", "busy_min", "busy_pct", "typical_cpu",
              "peak_cpu", "peak_temp",
+             "ram_from", "ram_to", "ram_peak", "mem_top", "mem_top_mb",
              "proc1", "proc1_pct", "proc1_min",
              "proc2", "proc2_pct", "proc2_min",
              "proc3", "proc3_pct", "proc3_min"]
@@ -1193,7 +1212,9 @@ def _log_away(rep):
             if new:
                 w.writerow(AWAY_COLS)
             row = [rep["when"], rep["duration_min"], rep["busy_min"], rep["busy_pct"],
-                   rep["typical_cpu"], rep["peak_cpu"], rep["peak_temp"]]
+                   rep["typical_cpu"], rep["peak_cpu"], rep["peak_temp"],
+                   rep["ram_from"], rep["ram_to"], rep["ram_peak"],
+                   rep["mem_top"], rep["mem_top_mb"]]
             for i in range(3):
                 n, pct, mins = rep["offenders"][i] if i < len(rep["offenders"]) else ("", "", "")
                 row += [n, pct, mins]
@@ -1209,9 +1230,9 @@ def _show_away():
     if not hwnd:
         return
     scale = st.get("scale", 1.0)
-    # ~263px of content once the "busy" row is added; the rest is slack so a font
+    # ~283px of content with the "busy" and "RAM" rows; the rest is slack so a font
     # fallback or DPI rounding can't clip the buttons (actions sit at margin-top:auto)
-    W, H = int(380 * scale), int(280 * scale)
+    W, H = int(380 * scale), int(300 * scale)
     sw = u.GetSystemMetrics(0)
     x, y = (sw - W) // 2, int(70 * scale)
     _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
@@ -1224,13 +1245,21 @@ def _finalize_away(stats):
     # Report a sustained spell, not a momentary spike — of load or of heat. Both
     # criteria are durations now, so one noisy sensor reading can't force a report.
     min_busy = max(3, round(60 / AWAY_POLL))
-    if stats["busy_samples"] < min_busy and stats["hot_samples"] < min_busy:
+    ram_first = stats["ram_first"] if stats["ram_first"] is not None else stats["ram_last"]
+    ram_last = stats["ram_last"]
+    # A machine can be quiet and cool all night and still be in trouble: memory that
+    # climbs and stays up is the one soak-test symptom this window is placed to catch.
+    leaky = (ram_last - ram_first) >= AWAY_RAM_RISE and ram_last >= AWAY_RAM_HIGH
+    if stats["busy_samples"] < min_busy and stats["hot_samples"] < min_busy and not leaky:
         return
     # Rank by CPU time used (share x intervals), not by best moment: a process that
     # sat at 8% for hours matters more than one that touched 10% once.
     top = sorted(stats["proc_acc"].items(), key=lambda kv: -kv[1][0])[:3]
     offenders = [(name, round(share / n, 1), round(n * AWAY_POLL / 60.0, 1))
                  for name, (share, n) in top]
+    # Only name a memory holder when memory actually went somewhere, so the line stays
+    # quiet on a normal night instead of always accusing whatever is simply biggest.
+    mem_name, mem_mb = _top_mem_process() if (ram_last - ram_first) >= 10 else ("", 0)
     AWAY["report"] = {
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "duration_min": round((time.time() - stats["start"]) / 60, 1),
@@ -1239,6 +1268,11 @@ def _finalize_away(stats):
         "typical_cpu": round(_median(stats["cpu_avgs"]), 1),
         "peak_cpu": round(peak_cpu, 1),
         "peak_temp": round(peak_temp, 1),
+        "ram_from": round(ram_first, 1),
+        "ram_to": round(ram_last, 1),
+        "ram_peak": round(stats["ram_peak"], 1),
+        "mem_top": mem_name,
+        "mem_top_mb": mem_mb,
         "offenders": offenders,
     }
     _log_away(AWAY["report"])
@@ -1280,6 +1314,7 @@ def away_loop():
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
                              "proc_acc": {}, "cpu_avgs": [], "hot_samples": 0,
+                             "ram_first": None, "ram_last": 0.0, "ram_peak": 0.0,
                              "busy_samples": 0, "samples": 0}
                 snap = collector.snapshot()
                 latest, hist = snap["latest"], snap["hist"]
@@ -1295,6 +1330,15 @@ def away_loop():
                 stats["peak_cpu"] = max(stats["peak_cpu"], cpu_peak)
                 stats["peak_temp"] = max(stats["peak_temp"], temp)
                 stats["cpu_avgs"].append(cpu_avg)     # for the typical level
+                # RAM is a level, not a spike: keep where it started and where it got
+                # to, so an overnight climb that never comes back is visible at all.
+                ram = latest.get("ram_pct")
+                if ram is not None:
+                    if stats["ram_first"] is None:
+                        stats["ram_first"] = ram
+                    stats["ram_last"] = ram
+                    ram_win = _recent(hist, "ram_pct")
+                    stats["ram_peak"] = max(stats["ram_peak"], max(ram_win) if ram_win else ram)
                 stats["samples"] += 1
                 if temp >= AWAY_HOT_C:
                     stats["hot_samples"] += 1         # how long it ran hot, not just how hot
