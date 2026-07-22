@@ -37,6 +37,14 @@ def test_num_extracts_from_unit_string():
 
 def test_num_comma_decimal():
     assert gm._num("1,5") == 1.5
+    assert gm._num("12,75") == 12.75
+
+
+def test_num_comma_thousands_is_not_a_decimal():
+    # "1,234 RPM" is a four-figure fan, not 1.234 — three digits after the comma
+    # is grouping, one or two is a decimal comma
+    assert gm._num("1,234 RPM") == 1234.0
+    assert gm._num("12,345") == 12345.0
 
 
 def test_num_negative():

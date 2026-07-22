@@ -97,9 +97,12 @@ class NvidiaProvider:
     metrics = ["gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock"]
     _INTERVAL = 2.0     # only spawn nvidia-smi this often; cache in between
 
+    _MAX_FAILS = 3      # ~6s of nothing before the tiles go blank rather than lie
+
     def __init__(self):
         self._cache = {}
         self._t = 0.0
+        self._fails = 0
 
     def sample(self):
         now = time.monotonic()
@@ -126,9 +129,15 @@ class NvidiaProvider:
             if clock is not None:
                 d["gpu_clock"] = clock
             if d:
-                self._cache = d
+                self._cache, self._fails = d, 0
+                return self._cache
+            raise ValueError("no usable fields")
         except Exception:
-            pass
+            # A driver reset or a disabled GPU must not leave the last good reading
+            # on screen looking current — blank tiles are honest, stale ones aren't.
+            self._fails += 1
+            if self._fails >= self._MAX_FAILS:
+                self._cache = {}
         return self._cache
 
 
@@ -249,7 +258,16 @@ def _num(s):
         except (TypeError, ValueError):
             return None
     m = re.search(r"-?\d+(?:[.,]\d+)?", s)
-    return float(m.group().replace(",", ".")) if m else None
+    if not m:
+        return None
+    t = m.group()
+    if "," in t:
+        # A comma means different things in different locales. Exactly three digits
+        # after it is thousands grouping ("1,234 RPM" is 1234, not 1.234); one or two
+        # is a decimal comma. Three decimal places on a temperature or a fan speed
+        # doesn't happen, four-figure RPM does.
+        t = t.replace(",", "") if len(t.split(",")[1]) == 3 else t.replace(",", ".")
+    return float(t)
 
 
 class LhmProvider:
@@ -500,7 +518,7 @@ class Collector:
                 return self.logfile
             name = "glintbar_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
             self.logfile = os.path.join(LOG_DIR, name)
-            self._csv_fh = open(self.logfile, "w", newline="")
+            self._csv_fh = open(self.logfile, "w", newline="", encoding="utf-8")
             self._csv = csv.writer(self._csv_fh)
             self._csv.writerow(["timestamp"] + METRIC_IDS +
                                ["gpu_mem_used_mb", "gpu_mem_total_mb", "ram_used_gb"])
@@ -512,6 +530,7 @@ class Collector:
             if self._csv_fh:
                 self._csv_fh.close()
             self._csv = self._csv_fh = None
+            self.logfile = None      # or snapshot() keeps naming a file nobody writes
             self.logging = False
 
     # ---- sampling --------------------------------------------------------
@@ -589,6 +608,18 @@ class Collector:
                 out["stats"][mid] = {"min": s["min"], "max": s["max"], "avg": avg}
             return out
 
+    def snapshot_metric(self, mid):
+        """Just the one metric the hover popup is showing. It polls faster than the
+        1s sample rate to paint quickly on open, so copying all twelve histories
+        each time — and holding the lock against the sampler to do it — is waste."""
+        with self.lock:
+            s = self.stats.get(mid)
+            avg = (s["sum"] / s["n"]) if s and s["n"] else None
+            return {"latest": self.latest.get(mid),
+                    "hist": list(self.hist[mid]) if mid in self.hist else [],
+                    "stats": {"min": s["min"], "max": s["max"], "avg": avg} if s else None,
+                    "extra": dict(self.extra)}
+
 
 collector = Collector()
 
@@ -612,16 +643,6 @@ class Api:
         s["gpu_kind"] = GPU_KIND
         return s
 
-    def toggle_log(self):
-        if collector.logging:
-            collector.stop_log()
-            return {"logging": False}
-        f = collector.start_log()
-        return {"logging": True, "logfile": os.path.basename(f)}
-
-    def open_logs(self):
-        os.startfile(LOG_DIR)
-
     def request_size(self, css_width):
         """Fit the embedded bar to its content width (CSS px). Returns True once placed."""
         return _place(css_width)
@@ -632,29 +653,12 @@ class Api:
     def show_detail(self, metric_id, chip_center_css):
         return _show_detail(metric_id, chip_center_css)
 
-    def hide_detail(self):
-        return _hide_detail()
-
     def beep(self):
         if CONFIG.get("sound", True):
             try:
                 winsound.MessageBeep(0x30)   # MB_ICONWARNING
             except Exception:
                 pass
-        return True
-
-    def get_config(self):
-        return {"config": CONFIG, "metric_ids": METRIC_IDS,
-                "available": AVAILABLE, "gpu_kind": GPU_KIND}
-
-    def save_config(self, cfg):
-        store_config(cfg)
-        for w in list(webview.windows):
-            if w.title == TITLE_SETTINGS:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
         return True
 
     def close(self):
@@ -747,6 +751,7 @@ def _win32_setup(user32):
     user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
     user32.GetWindowThreadProcessId.restype = wt.DWORD
     user32.IsWindowVisible.argtypes = [wt.HWND]
+    user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
 
 
 def _rect(user32, hwnd):
@@ -1066,11 +1071,11 @@ class DetailApi:
         mid = DETAIL.get("metric")
         if not mid:
             return {"metric": None}
-        snap = collector.snapshot()
+        snap = collector.snapshot_metric(mid)
         return {"metric": mid,
-                "latest": snap["latest"].get(mid),
-                "hist": snap["hist"].get(mid, []),
-                "stats": snap["stats"].get(mid),
+                "latest": snap["latest"],
+                "hist": snap["hist"],
+                "stats": snap["stats"],
                 "extra": snap["extra"],
                 "temp_unit": CONFIG.get("temp_unit", "C")}
 
@@ -1432,7 +1437,6 @@ def _fit_settings(css_h):
     hwnd = u.FindWindowW(None, TITLE_SETTINGS)
     if not hwnd:
         return False
-    u.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
     scale = st.get("scale", 1.0)
     wr, cr = wt.RECT(), wt.RECT()
     u.GetWindowRect(hwnd, ctypes.byref(wr))
