@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlintBar — Windows taskbar hardware monitor for CPU, GPU and temperatures</title>
+<meta name="description" content="GlintBar is a free, open-source hardware monitor that lives in the empty gap of the Windows 10 and 11 taskbar. Live CPU, GPU, RAM, temperature, fan, disk and network readings with sparklines. No admin rights, no .exe, Python source.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312161c'/%3E%3Cpath d='M5 21l4-5 4 3 5-8 4 6 5-9' fill='none' stroke='%2358a6ff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="canonical" href="https://paone9.github.io/GlintBar/">
+<meta property="og:title" content="GlintBar — Windows taskbar hardware monitor">
+<meta property="og:description" content="Live CPU, GPU, RAM, temperature and fan readings in the unused gap of your Windows taskbar. No admin needed.">
+<meta property="og:image" content="https://paone9.github.io/GlintBar/hero.png">
+<meta property="og:url" content="https://paone9.github.io/GlintBar/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root{ --bg:#0d1117; --panel:#12161c; --line:#2b3542; --text:#e6edf3;
+         --dim:#9aa4af; --ok:#58a6ff; --warn:#d29922; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ background:var(--bg); color:var(--text); line-height:1.6;
+        font:16px/1.6 -apple-system,"Segoe UI",system-ui,sans-serif;
+        -webkit-font-smoothing:antialiased; }
+  .wrap{ max-width:860px; margin:0 auto; padding:0 20px; }
+  header{ padding:64px 0 40px; text-align:center; }
+  h1{ font-size:clamp(2.2rem,6vw,3.2rem); letter-spacing:-.02em; margin-bottom:12px; }
+  .tag{ color:var(--dim); font-size:clamp(1rem,2.5vw,1.2rem); max-width:620px;
+        margin:0 auto 28px; }
+  .cta{ display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:14px; }
+  .btn{ display:inline-block; padding:10px 20px; border-radius:8px; text-decoration:none;
+        border:1px solid var(--line); color:var(--text); background:var(--panel);
+        font-size:.95rem; }
+  .btn.primary{ border-color:var(--ok); color:var(--ok); }
+  code,pre{ font-family:ui-monospace,"Cascadia Code",Consolas,monospace; }
+  pre{ background:var(--panel); border:1px solid var(--line); border-radius:8px;
+       padding:14px 16px; overflow-x:auto; font-size:.9rem; }
+  .shot{ margin:36px 0; }
+  .shot img{ max-width:100%; height:auto; border:1px solid var(--line);
+             border-radius:10px; display:block; margin:0 auto; }
+  .cap{ color:var(--dim); font-size:.85rem; text-align:center; margin-top:10px; }
+  section{ padding:36px 0; border-top:1px solid var(--line); }
+  h2{ font-size:1.5rem; margin-bottom:14px; letter-spacing:-.01em; }
+  h3{ font-size:1.05rem; margin:22px 0 8px; color:var(--warn); }
+  p{ margin-bottom:14px; color:#c9d1d9; }
+  ul{ margin:0 0 14px 20px; color:#c9d1d9; }
+  li{ margin-bottom:6px; }
+  .tw{ overflow-x:auto; }
+  table{ border-collapse:collapse; width:100%; font-size:.92rem; min-width:460px; }
+  th,td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th{ color:var(--dim); font-weight:600; }
+  footer{ padding:40px 0 60px; text-align:center; color:var(--dim); font-size:.9rem;
+          border-top:1px solid var(--line); }
+  a{ color:var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>GlintBar</h1>
+  <p class="tag">A live hardware monitor that sits in the empty gap of your Windows
+  taskbar. No window to keep open, no screen space given up.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/paone9/GlintBar">View on GitHub</a>
+    <a class="btn" href="https://pypi.org/project/glintbar/">Get it on PyPI</a>
+  </div>
+  <pre style="max-width:320px;margin:18px auto 0;text-align:left">pip install glintbar
+glintbar</pre>
+</header>
+
+<div class="shot">
+  <img src="hero.png" alt="GlintBar in the Windows taskbar showing CPU, RAM, system temperature, GPU temperature, VRAM, GPU clock, power, disk and network tiles, each with a sparkline">
+  <p class="cap">Up to twelve metrics, each with a 60-second sparkline, in space the taskbar wasn't using.</p>
+</div>
+
+<section>
+  <h2>What it shows</h2>
+  <p>A single row of tiles, each with a value and a rolling 60-second sparkline.
+  Hover any tile for a larger live graph with the session minimum, maximum and average.</p>
+  <div class="tw">
+  <table>
+    <tr><th scope="col">Tile</th><th scope="col">Source</th><th scope="col">Worth watching for</th></tr>
+    <tr><td>GPU temp</td><td>nvidia-smi</td><td>amber above 80&nbsp;°C, red above 87&nbsp;°C</td></tr>
+    <tr><td>GPU load</td><td>nvidia-smi / perf counters</td><td>sustained 100%</td></tr>
+    <tr><td>VRAM</td><td>nvidia-smi</td><td>red above 95%</td></tr>
+    <tr><td>GPU clock &amp; power</td><td>nvidia-smi</td><td>a clock collapse mid-load is the fingerprint of a driver hang</td></tr>
+    <tr><td>System temp</td><td>ACPI thermal zone</td><td>red above 97&nbsp;°C</td></tr>
+    <tr><td>CPU temp &amp; fan</td><td>HWiNFO or LibreHardwareMonitor</td><td>real package temperature (needs one of those running)</td></tr>
+    <tr><td>CPU, RAM, disk, network</td><td>psutil</td><td>works on any Windows PC</td></tr>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Why it's built this way</h2>
+  <h3>It uses space you already lost</h3>
+  <p>The middle of the Windows 11 taskbar is dead space. GlintBar fits itself to that
+  gap, stays out of the way of your taskbar buttons, and yields entirely when the gap
+  gets too narrow or a fullscreen app takes the screen.</p>
+  <h3>No admin rights</h3>
+  <p>Everything comes from sources that don't need elevation: the NVIDIA driver's own
+  <code>nvidia-smi</code>, Windows performance counters, the ACPI thermal zone, and
+  <code>psutil</code>. If you already run HWiNFO or LibreHardwareMonitor, it reads
+  real CPU package temperature and fan RPM from those too — locally, never over the
+  internet.</p>
+  <h3>Source, not a binary</h3>
+  <p>Distribution is source-first with no <code>.exe</code>. Corporate environments
+  block unsigned binaries, and plain Python is easy to audit. Releases are published
+  to PyPI through Trusted Publishing and signed with Sigstore.</p>
+  <h3>It tells you what happened while you were out</h3>
+  <p>Leave the machine and come back to a summary: how long it was actually busy, the
+  typical and peak load, how hot it got, whether memory climbed and stayed up, and
+  which processes used the CPU time.</p>
+</section>
+
+<div class="shot">
+  <img src="settings.png" alt="The GlintBar settings panel: choosing which metrics to show, bar size, alignment in the taskbar, sparklines, alerts and CSV logging">
+  <p class="cap">Pick your tiles, size and alignment. Optional per-second CSV logging for offline analysis.</p>
+</div>
+
+<section>
+  <h2>What you need</h2>
+  <ul>
+    <li><strong>Windows 10 or 11.</strong> It is built on Win32 APIs, so there is no macOS or Linux build.</li>
+    <li><strong>Python 3.10+</strong> and the WebView2 runtime. Windows 11 already has it;
+        Windows 10 usually does via Edge, but may need the free Evergreen runtime.</li>
+    <li><strong>An NVIDIA GPU</strong> for the full GPU set. AMD and Intel GPUs report load only; without a GPU those tiles are simply hidden.</li>
+    <li><strong>HWiNFO or LibreHardwareMonitor</strong>, optionally, for true CPU package temperature and fan speed.</li>
+  </ul>
+  <p>The only dependencies are <code>pywebview</code> and <code>psutil</code>, installed
+  for you. Configuration and logs live in <code>%LOCALAPPDATA%\GlintBar</code>, never
+  in the install directory.</p>
+</section>
+
+<footer>
+  <p>MIT licensed &middot;
+     <a href="https://github.com/paone9/GlintBar">GitHub</a> &middot;
+     <a href="https://pypi.org/project/glintbar/">PyPI</a> &middot;
+     <a href="https://github.com/paone9/GlintBar/issues">Report an issue</a></p>
+</footer>
+
+</div>
+</body>
+</html>
