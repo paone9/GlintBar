@@ -142,6 +142,26 @@ def test_lhm_no_data_is_empty():
     assert _lhm(None).sample() == {}
 
 
+# --- _median: the typical level, used for the away report ---
+
+def test_median_odd_and_even():
+    assert gm._median([3.0, 1.0, 2.0]) == 2.0
+    assert gm._median([1.0, 2.0, 3.0, 4.0]) == 2.5
+
+
+def test_median_ignores_a_single_spike():
+    # the whole reason it isn't a mean or a max
+    quiet = [1.0, 1.0, 1.0, 1.0, 1.0]
+    assert gm._median(quiet) == 1.0
+    assert gm._median(quiet + [99.0]) == 1.0
+
+
+def test_median_empty_and_none():
+    assert gm._median([]) == 0.0
+    assert gm._median([None, None]) == 0.0
+    assert gm._median([None, 5.0]) == 5.0
+
+
 # --- _recent: the away poll's one-second sample window ---
 
 def test_recent_returns_the_whole_window_not_one_sample():

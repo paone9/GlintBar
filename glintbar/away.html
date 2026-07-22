@@ -31,9 +31,10 @@
 <div class="card">
   <div class="hdr">While you were away</div>
   <div class="sub" id="sub">—</div>
-  <div class="row"><span class="k">Peak CPU</span><span class="v" id="cpu">—</span></div>
+  <div class="row"><span class="k">Busy</span><span class="v" id="busy">—</span></div>
+  <div class="row"><span class="k">CPU</span><span class="v" id="cpu">—</span></div>
   <div class="row"><span class="k">Peak temp</span><span class="v" id="temp">—</span></div>
-  <div class="lbl">Busiest processes (average)</div>
+  <div class="lbl">Busiest while busy</div>
   <div id="procs"></div>
   <div class="actions">
     <button id="logs">Open log</button>
@@ -42,22 +43,31 @@
 </div>
 
 <script>
+function dur(m){
+  m = Math.round(m || 0);
+  if(m < 60) return m + "m";
+  return Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") + "m";
+}
 async function tick(){
   let r; try{ r = await window.pywebview.api.get(); }catch(e){ return; }
   if(!r) return;
-  document.getElementById("sub").textContent = `${r.when}, away for ${r.duration_min} min`;
+  document.getElementById("sub").textContent = `${r.when}, away for ${dur(r.duration_min)}`;
+  document.getElementById("busy").textContent =
+      `${dur(r.busy_min)} of it (${r.busy_pct}%)`;
   const cpu = document.getElementById("cpu");
-  cpu.textContent = r.peak_cpu + "%"; cpu.className = "v" + (r.peak_cpu >= 60 ? " hot" : "");
+  cpu.textContent = `${r.typical_cpu}% typical · ${r.peak_cpu}% peak`;
+  cpu.className = "v" + (r.peak_cpu >= 60 ? " hot" : "");
   const temp = document.getElementById("temp");
   temp.textContent = r.peak_temp ? r.peak_temp + " °C" : "n/a";
   temp.className = "v" + (r.peak_temp >= 90 ? " hot" : "");
   const host = document.getElementById("procs"); host.innerHTML = "";
   const list = r.offenders || [];
   if(list.length){
-    for(const [name, c] of list){
+    for(const [name, c, mins] of list){
       const d = document.createElement("div"); d.className = "proc";
       const pn = document.createElement("span"); pn.className = "p"; pn.textContent = name;
-      const cc = document.createElement("span"); cc.className = "c"; cc.textContent = c + "%";
+      const cc = document.createElement("span"); cc.className = "c";
+      cc.textContent = `${c}% · ${dur(mins)}`;
       d.append(pn, cc);
       host.appendChild(d);
     }

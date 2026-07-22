@@ -1144,7 +1144,18 @@ def _detail_watchdog():
 
 
 AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between checks
+AWAY_HOT_C = 85              # a run this hot is worth reporting on its own
 AWAY = {"report": None}
+
+
+def _median(vals):
+    """The typical level. A peak says only how bad one second got; a mean is
+    dragged around by that same second. The middle value is neither."""
+    s = sorted(v for v in vals if v is not None)
+    if not s:
+        return 0.0
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
 
 
 def _recent(hist, key):
@@ -1158,18 +1169,35 @@ def _away_hwnd(user32):
     return user32.FindWindowW(None, TITLE_AWAY)
 
 
+AWAY_COLS = ["when", "away_min", "busy_min", "busy_pct", "typical_cpu",
+             "peak_cpu", "peak_temp",
+             "proc1", "proc1_pct", "proc1_min",
+             "proc2", "proc2_pct", "proc2_min",
+             "proc3", "proc3_pct", "proc3_min"]
+
+
 def _log_away(rep):
     try:
         path = os.path.join(LOG_DIR, "away.csv")
+        # Appending the wider row under an older header would quietly corrupt the
+        # file, so retire that one and start a fresh log beside it.
+        if os.path.exists(path):
+            with open(path, newline="", encoding="utf-8") as f:
+                head = next(csv.reader(f), [])
+            if head != AWAY_COLS:
+                os.replace(path, os.path.join(
+                    LOG_DIR, "away-" + datetime.now().strftime("%Y%m%d%H%M%S") + ".csv"))
         new = not os.path.exists(path)
         with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if new:
-                w.writerow(["when", "away_min", "peak_cpu", "peak_temp",
-                            "top_process", "top_cpu"])
-            top = rep["offenders"][0] if rep["offenders"] else ("", 0)
-            w.writerow([rep["when"], rep["duration_min"], rep["peak_cpu"],
-                        rep["peak_temp"], top[0], top[1]])
+                w.writerow(AWAY_COLS)
+            row = [rep["when"], rep["duration_min"], rep["busy_min"], rep["busy_pct"],
+                   rep["typical_cpu"], rep["peak_cpu"], rep["peak_temp"]]
+            for i in range(3):
+                n, pct, mins = rep["offenders"][i] if i < len(rep["offenders"]) else ("", "", "")
+                row += [n, pct, mins]
+            w.writerow(row)
     except Exception:
         pass
 
@@ -1181,7 +1209,9 @@ def _show_away():
     if not hwnd:
         return
     scale = st.get("scale", 1.0)
-    W, H = int(380 * scale), int(240 * scale)
+    # ~263px of content once the "busy" row is added; the rest is slack so a font
+    # fallback or DPI rounding can't clip the buttons (actions sit at margin-top:auto)
+    W, H = int(380 * scale), int(280 * scale)
     sw = u.GetSystemMetrics(0)
     x, y = (sw - W) // 2, int(70 * scale)
     _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
@@ -1191,16 +1221,22 @@ def _finalize_away(stats):
     if not stats or stats["samples"] == 0:
         return
     peak_cpu, peak_temp = stats["peak_cpu"], stats["peak_temp"]
-    # only report a sustained busy spell (~1 min of high CPU) or a genuinely hot run,
-    # not a single momentary spike
+    # Report a sustained spell, not a momentary spike — of load or of heat. Both
+    # criteria are durations now, so one noisy sensor reading can't force a report.
     min_busy = max(3, round(60 / AWAY_POLL))
-    if stats["busy_samples"] < min_busy and peak_temp < 85:
+    if stats["busy_samples"] < min_busy and stats["hot_samples"] < min_busy:
         return
-    offenders = sorted(stats["proc_peak"].items(), key=lambda x: -x[1])[:3]
-    offenders = [(name, round(v, 1)) for name, v in offenders]   # peak %, no dilution
+    # Rank by CPU time used (share x intervals), not by best moment: a process that
+    # sat at 8% for hours matters more than one that touched 10% once.
+    top = sorted(stats["proc_acc"].items(), key=lambda kv: -kv[1][0])[:3]
+    offenders = [(name, round(share / n, 1), round(n * AWAY_POLL / 60.0, 1))
+                 for name, (share, n) in top]
     AWAY["report"] = {
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "duration_min": round((time.time() - stats["start"]) / 60, 1),
+        "busy_min": round(stats["busy_samples"] * AWAY_POLL / 60.0, 1),
+        "busy_pct": round(100.0 * stats["busy_samples"] / stats["samples"], 1),
+        "typical_cpu": round(_median(stats["cpu_avgs"]), 1),
         "peak_cpu": round(peak_cpu, 1),
         "peak_temp": round(peak_temp, 1),
         "offenders": offenders,
@@ -1243,7 +1279,8 @@ def away_loop():
                 if not away:
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
-                             "proc_peak": {}, "busy_samples": 0, "samples": 0}
+                             "proc_acc": {}, "cpu_avgs": [], "hot_samples": 0,
+                             "busy_samples": 0, "samples": 0}
                 snap = collector.snapshot()
                 latest, hist = snap["latest"], snap["hist"]
                 cpu_win = _recent(hist, "cpu")
@@ -1257,14 +1294,21 @@ def away_loop():
                 temp = max(temp_win) if temp_win else (latest.get(temp_key) or 0.0)
                 stats["peak_cpu"] = max(stats["peak_cpu"], cpu_peak)
                 stats["peak_temp"] = max(stats["peak_temp"], temp)
+                stats["cpu_avgs"].append(cpu_avg)     # for the typical level
                 stats["samples"] += 1
+                if temp >= AWAY_HOT_C:
+                    stats["hot_samples"] += 1         # how long it ran hot, not just how hot
                 if cpu_avg >= CONFIG.get("away_cpu_pct", 25):
                     stats["busy_samples"] += 1
                     by_name = {}                      # sum same-named procs this sample
                     for name, c in tops:
                         by_name[name] = by_name.get(name, 0.0) + c
-                    for name, c in by_name.items():   # then keep each name's peak
-                        stats["proc_peak"][name] = max(stats["proc_peak"].get(name, 0.0), c)
+                    for name, c in by_name.items():
+                        # Accumulate share and intervals, so a process can be ranked by
+                        # the CPU time it actually used rather than by its best moment.
+                        acc = stats["proc_acc"].setdefault(name, [0.0, 0])
+                        acc[0] += c
+                        acc[1] += 1
             elif away:
                 away = False
                 _finalize_away(stats)
