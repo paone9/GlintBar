@@ -92,7 +92,8 @@ appear on their own. HWiNFO is preferred if both are running.
 
 ### Requirements
 
-Python 3.8+ and the WebView2 runtime, which already ships with Windows 11. No
+Python 3.10+ and the WebView2 runtime, which already ships with Windows 11;
+Windows 10 usually has it via Edge, but may need the free Evergreen runtime. No
 admin, no compiled binaries, just Python source. The only dependencies are
 `pywebview` and `psutil`, installed automatically.
 
