@@ -26,6 +26,7 @@
         border:1px solid var(--line); background:var(--panel); color:var(--text); }
   .actions .save{ background:var(--accent); border-color:var(--accent); color:#06101f;
         font-weight:600; }
+  .actions .save:disabled{ opacity:.45; cursor:default; }
   .logrow{ display:flex; gap:8px; align-items:center; }
   #logtoggle{ background:var(--panel); color:var(--text); border:1px solid var(--line);
         border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; }
@@ -156,8 +157,16 @@ function fitWindow(){
   try{ window.pywebview.api.fit(Math.ceil(document.body.scrollHeight)); }catch(e){}
 }
 
+// cfg starts as a partial defaults object; the real config (with temp_unit, hotkey
+// and the away_* keys that have no control here) arrives asynchronously. Block Save
+// until then, or a fast click would persist the partial and reset those to default.
+let loaded = false;
+const saveBtn = document.getElementById("save");
+saveBtn.disabled = true;
+
 document.getElementById("cancel").onclick = ()=> window.pywebview.api.cancel();
-document.getElementById("save").onclick = ()=>{
+saveBtn.onclick = ()=>{
+  if (!loaded) return;
   if (!cfg.metrics.length) cfg.metrics = ORDER.slice();
   window.pywebview.api.save_config(cfg);
 };
@@ -171,6 +180,8 @@ async function loadConfig(){
     if (r && r.available) AVAIL = r.available;
     if (r && r.config) cfg = Object.assign(cfg, r.config);
     cfg.metrics = ORDER.filter(x=>cfg.metrics.includes(x) && AVAIL.includes(x));
+    loaded = true;
+    saveBtn.disabled = false;
     renderAll();
   }catch(e){}
   await refreshLog();
