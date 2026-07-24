@@ -749,6 +749,10 @@ def _win32_setup(user32):
     user32.MoveWindow.argtypes = [wt.HWND, wt.INT, wt.INT, wt.INT, wt.INT, wt.BOOL]
     user32.ShowWindow.argtypes = [wt.HWND, wt.INT]
     user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, wt.INT, wt.INT, wt.INT, wt.INT, wt.UINT]
+    user32.GetWindowLongW.argtypes = [wt.HWND, wt.INT]      # HWND is a handle - argtypes
+    user32.GetWindowLongW.restype = wt.LONG
+    user32.SetWindowLongW.argtypes = [wt.HWND, wt.INT, wt.LONG]
+    user32.SetWindowLongW.restype = wt.LONG
     user32.GetForegroundWindow.restype = wt.HWND
     user32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, wt.INT]
     user32.MonitorFromWindow.restype = wt.HMONITOR
@@ -758,6 +762,32 @@ def _win32_setup(user32):
     user32.GetWindowThreadProcessId.restype = wt.DWORD
     user32.IsWindowVisible.argtypes = [wt.HWND]
     user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+    try:                                       # Win10 1607+; absent on older builds
+        user32.GetDpiForWindow.argtypes = [wt.HWND]
+        user32.GetDpiForWindow.restype = wt.UINT
+    except AttributeError:
+        pass
+    try:                                       # HWND is a handle — argtypes or it truncates
+        d = ctypes.windll.dwmapi
+        d.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
+        d.DwmGetWindowAttribute.restype = ctypes.c_long
+    except Exception:
+        pass
+
+
+def _monitor_scale(user32, hwnd, fallback=1.0):
+    """DPI scale of the monitor THIS window is on. The process is per-monitor-v2
+    aware, so WebView2 renders CSS at each monitor's own scale — the frame must be
+    sized by the same per-monitor factor, not one global GetDpiForSystem() taken
+    from the primary. That mismatch is what makes the bar and popups the wrong size
+    on a screen whose scaling differs from the primary. Falls back on Win < 1607."""
+    try:
+        dpi = user32.GetDpiForWindow(hwnd)
+        if dpi:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return fallback
 
 
 def _rect(user32, hwnd):
@@ -793,15 +823,31 @@ _SHELL_PROCS = {
     "shellexperiencehost.exe", "textinputhost.exe",
 }
 
-
 _ENUM_PROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
+def _is_cloaked(hwnd):
+    """DWM-cloaked windows (background UWP frames) report visible but aren't shown;
+    they must not count as the topmost real window on the screen."""
+    try:
+        val = wt.DWORD()
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(   # DWMWA_CLOAKED = 14
+                hwnd, 14, ctypes.byref(val), ctypes.sizeof(val)) == 0:
+            return val.value != 0
+    except Exception:
+        pass
+    return False
+
+
 def _fullscreen_on_bar_monitor(user32):
-    """True when any window covers the whole monitor the bar sits on (fullscreen
-    video, game, or slideshow) - even if it isn't the foreground window. This is
-    what catches a fullscreen app on the bar's screen while you're working on a
-    second monitor, which a foreground-only check misses."""
+    """Hide exactly when the bar's monitor is owned by an unobstructed fullscreen
+    app — mirroring how that monitor's own taskbar hides. The test is: the TOPMOST
+    real window on our monitor covers the whole monitor. So a fullscreen video hides
+    us even while you work on the other screen (it's still topmost on this one), but
+    a normal window opened on top of it shows us again (that window is now topmost
+    and doesn't cover). We stop at the first real window, not hunt for a covering one
+    behind it — that hunt was the bug that hid the bar under a window-on-top and let
+    an unfocused fullscreen leak through."""
     our = EMBED_STATE.get("hwnd")
     if not our:
         return False
@@ -811,36 +857,41 @@ def _fullscreen_on_bar_monitor(user32):
     if not user32.GetMonitorInfoW(our_mon, ctypes.byref(mi)):
         return False
     mon = mi.rcMonitor
-    hit = [False]
+    state = {"hide": False, "done": False}
 
     def _cb(hwnd, _):
-        if hit[0]:
+        if state["done"]:
             return False
-        if hwnd == our or not user32.IsWindowVisible(hwnd):
-            return True
+        if hwnd == our or not user32.IsWindowVisible(hwnd) or _is_cloaked(hwnd):
+            return True                            # ours / hidden / cloaked -> keep looking
         if user32.MonitorFromWindow(hwnd, 2) != our_mon:
             return True                            # on another screen
         buf = ctypes.create_unicode_buffer(64)
         user32.GetClassNameW(hwnd, buf, 64)
-        if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
-            return True                            # desktop / taskbar
-        r = wt.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(r))
-        if not (r.left <= mon.left and r.top <= mon.top
-                and r.right >= mon.right and r.bottom >= mon.bottom):
-            return True                            # doesn't cover the whole monitor (e.g. maximised)
-        try:                                       # ignore shell surfaces (Start, Search, touch keyboard)
+        if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+            return True                            # desktop / taskbar -> keep looking
+        try:                                       # transient shell surfaces (Start, Search, IME)
             pid = wt.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if psutil.Process(pid.value).name().lower() in _SHELL_PROCS:
                 return True
         except Exception:
             pass
-        hit[0] = True
-        return False                               # found one - stop enumerating
+        if user32.GetWindowLongW(hwnd, -20) & 0x20:    # WS_EX_TRANSPARENT (GWL_EXSTYLE)
+            return True                            # click-through overlay (e.g. a screen-share
+            # border): the taskbar shows straight through it, so it doesn't hide us
+        r = wt.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        if r.right <= r.left or r.bottom <= r.top:
+            return True                            # zero-area phantom -> keep looking
+        # first real top-level window on our monitor: is IT fullscreen?
+        state["hide"] = (r.left <= mon.left and r.top <= mon.top
+                         and r.right >= mon.right and r.bottom >= mon.bottom)
+        state["done"] = True
+        return False
 
     user32.EnumWindows(_ENUM_PROC(_cb), 0)
-    return hit[0]
+    return state["hide"]
 
 
 class LASTINPUTINFO(ctypes.Structure):
@@ -975,7 +1026,13 @@ def _overlay(user32, gap_l, gap_r, top, height, scale):
     user32.ShowWindow(hwnd, 0)     # hide/show so Windows drops the taskbar/Alt-Tab entry
     EMBED_STATE.update(hwnd=hwnd, user32=user32, gap_l=gap_l, gap_r=gap_r,
                        top=top, height=height, scale=scale)
-    _place(None)   # re-shows it (SW_SHOW) as a tool window and fits it to the gap
+    _place(None)   # position on the taskbar's monitor (width uses the bootstrap scale)
+    # Now that it sits on the right monitor, size everything by THAT monitor's DPI
+    # rather than the primary's — the frame must match how WebView2 scales the CSS.
+    mscale = _monitor_scale(user32, hwnd, scale)
+    if abs(mscale - scale) > 0.01:
+        EMBED_STATE["scale"] = mscale
+        _place(None)
 
 
 def _watcher():
@@ -1010,7 +1067,14 @@ def _watcher():
             if not region:
                 continue
             (tbl, tbt, tbr, tbb, tray), (gl, gr) = region
-            if abs(gl - st["gap_l"]) > 8 or abs(gr - st["gap_r"]) > 8 or tbt != st["top"]:
+            # follow the bar's monitor DPI: docking can move it between a 150% panel
+            # and a 100% external, and it must re-size to the screen it lands on
+            new_scale = _monitor_scale(u, st["hwnd"], st["scale"])
+            dpi_changed = abs(new_scale - st["scale"]) > 0.01
+            if dpi_changed:
+                st["scale"] = new_scale
+            if (dpi_changed or abs(gl - st["gap_l"]) > 8 or abs(gr - st["gap_r"]) > 8
+                    or tbt != st["top"]):
                 st["gap_l"], st["gap_r"], st["top"], st["height"] = gl, gr, tbt, tbb - tbt
                 _place(st.get("last_css"))
         except Exception:
@@ -1267,8 +1331,18 @@ def _show_away():
     # Deliberately a constant size. Sizing to content made the popup jump around
     # between reports; a long list scrolls inside instead.
     W, H = int(380 * scale), int(300 * scale)
-    sw = u.GetSystemMetrics(0)
-    x, y = (sw - W) // 2, int(70 * scale)
+    # Centre on the bar's OWN monitor, not the primary: it's sized by that monitor's
+    # DPI, so placing it there keeps size and position on the same screen.
+    bar = st.get("hwnd")
+    mon = u.MonitorFromWindow(bar, 2) if bar else None       # MONITOR_DEFAULTTONEAREST
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    if mon and u.GetMonitorInfoW(mon, ctypes.byref(mi)):
+        m = mi.rcMonitor
+        x = m.left + ((m.right - m.left) - W) // 2
+        y = m.top + int(70 * scale)
+    else:
+        x, y = (u.GetSystemMetrics(0) - W) // 2, int(70 * scale)
     _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
 
 
@@ -1536,6 +1610,43 @@ def _single_instance():
     return ctypes.get_last_error() != 183   # ERROR_ALREADY_EXISTS
 
 
+def _diag_per_monitor_dpi(user32):
+    """Print each monitor's rect and effective DPI scale. The bar sizes by the DPI
+    of whichever monitor it lands on, so a mixed-scaling setup shows up here."""
+    try:
+        shcore = ctypes.windll.shcore
+        # argtypes matter: HMONITOR is a 64-bit handle, and the default c_int would
+        # truncate it — the exact handle-truncation trap the win32 prototypes exist
+        # to prevent. Without this the DPI line silently reports garbage on machines
+        # whose monitor handles don't happen to fit in 32 bits.
+        shcore.GetDpiForMonitor.argtypes = [wt.HMONITOR, ctypes.c_int,
+                                            ctypes.POINTER(wt.UINT), ctypes.POINTER(wt.UINT)]
+        shcore.GetDpiForMonitor.restype = ctypes.c_long   # HRESULT
+    except Exception:
+        return
+    cb_t = ctypes.WINFUNCTYPE(wt.BOOL, wt.HMONITOR, wt.HDC,
+                              ctypes.POINTER(wt.RECT), wt.LPARAM)
+
+    def _cb(hmon, _hdc, _lprc, _l):
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        user32.GetMonitorInfoW(hmon, ctypes.byref(mi))
+        m = mi.rcMonitor
+        dx, dy = wt.UINT(), wt.UINT()
+        scale = "?"
+        try:
+            if shcore.GetDpiForMonitor(hmon, 0, ctypes.byref(dx), ctypes.byref(dy)) == 0:
+                scale = "%.2fx" % (dx.value / 96.0)
+        except Exception:
+            pass
+        prim = " PRIMARY" if mi.dwFlags & 1 else ""
+        print("  monitor   : (%d,%d,%d,%d) scale %s%s"
+              % (m.left, m.top, m.right, m.bottom, scale, prim))
+        return True
+
+    user32.EnumDisplayMonitors(None, None, cb_t(_cb), 0)
+
+
 def _diag():
     """Print the facts that decide how GlintBar renders on this machine
     (taskbar detection, providers, timings). Run:  python -m glintbar --diag"""
@@ -1557,8 +1668,11 @@ def _diag():
         pass
     _win32_setup(u)
     try:
-        print("  dpi scale :", u.GetDpiForSystem() / 96.0,
+        # system DPI is the primary's; the bar sizes by its OWN monitor's DPI, so
+        # print per-monitor too — that divergence is what breaks a mixed-DPI setup
+        print("  dpi (system/primary):", u.GetDpiForSystem() / 96.0,
               " monitors:", u.GetSystemMetrics(80))       # SM_CMONITORS
+        _diag_per_monitor_dpi(u)
     except Exception:
         pass
     print("providers")
@@ -1618,6 +1732,20 @@ def _alert(msg, error=False):
         pass
 
 
+def _webview2_present():
+    """Whether pywebview will get the modern WebView2 engine. Without it, pywebview
+    silently falls back to the deprecated MSHTML (IE11) engine, which can't render
+    the bar's CSS variables or parse its JS — so it would come up blank or broken
+    with no way to say why. Uses pywebview's OWN detection so this can't disagree
+    with the engine it actually picks, and fails OPEN: if we can't tell, start
+    anyway rather than wrongly block a machine that would have worked."""
+    try:
+        from webview.platforms.winforms import _is_chromium
+        return bool(_is_chromium())
+    except Exception:
+        return True
+
+
 def _run():
     if "--diag" in sys.argv:
         _diag()
@@ -1625,6 +1753,12 @@ def _run():
     if not _single_instance():
         _alert("GlintBar is already running, so there's nothing to start.\n\n"
                "To restart it, close it with the X on the bar and launch again.")
+        return
+    if not _webview2_present():
+        _alert("GlintBar needs the Microsoft Edge WebView2 runtime, which isn't "
+               "installed on this PC. Without it the bar can't draw.\n\n"
+               "Install the free Evergreen runtime, then start GlintBar again:\n"
+               "https://developer.microsoft.com/microsoft-edge/webview2/", error=True)
         return
     user32 = ctypes.windll.user32
     # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
