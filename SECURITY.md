@@ -58,9 +58,9 @@ Two, both widely used and open source:
   [CodeQL](https://codeql.github.com/) workflow runs semantic analysis of the
   Python, the UI JavaScript, and the workflow files. The results are on the
   Actions and Security tabs.
-- GitHub Actions are pinned to commit SHAs, and the runtime dependencies are
-  declared in `pyproject.toml` with the minimum tested version and bumped by
-  Dependabot.
+- GitHub Actions are pinned to commit SHAs. Dependabot bumps those and the pinned
+  dev tools (ruff, bandit, pytest); the two runtime dependencies sit at
+  minimum-tested floors in `pyproject.toml`.
 - To confirm there's no internet use, read the code. The only network call is the
   optional LibreHardwareMonitor read on `127.0.0.1`; leave that integration off and
   there are none. Or run it behind a network monitor.

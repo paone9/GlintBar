@@ -240,9 +240,9 @@ only reads system metrics and writes `config.json` and logs to
 
 CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
 static analysis of the Python, the UI JavaScript, and the workflows themselves.
-GitHub Actions are pinned to commit SHAs, and the runtime dependencies are
-declared in `pyproject.toml` with the minimum tested version and kept current by
-Dependabot. An
+GitHub Actions are pinned to commit SHAs. Dependabot keeps those and the pinned
+dev tools up to date; the two runtime dependencies sit at minimum-tested floors in
+`pyproject.toml`. An
 [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 grades the repo's security posture (badge above). See the repo's Security tab, and
 [SECURITY.md](SECURITY.md) for exactly what the app touches.
