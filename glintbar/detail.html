@@ -85,7 +85,7 @@ async function tick(){
   if(d.metric==="ram_pct"&&d.extra&&d.extra.ram_used_gb!=null)
     extra=`  ·  ${d.extra.ram_used_gb.toFixed(1)}/${d.extra.ram_total_gb.toFixed(0)} GB`;
   document.getElementById("stats").textContent =
-    (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  last 60s`:"") + extra;
+    (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  since launch`:"") + extra;
   draw(document.getElementById("cv"), d.hist||[], m, color(c));
 }
 window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 100); });
