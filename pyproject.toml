@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glintbar"
-version = "1.1.1"
+version = "1.2.0"
 description = "A slim always-on-top hardware monitor that lives in the empty part of the Windows taskbar."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,12 @@ classifiers = [
 dependencies = [
     "pywebview>=6.2.1",
     "psutil>=7.2.2",
+    # pywebview/psutil are mature 1.0+ libraries, so a bare floor is right for them.
+    # taskbargap is a self-declared alpha (Development Status :: 3 - Alpha) that
+    # documents its own API can change between 0.x minor releases - a bare floor
+    # would silently accept a future breaking release on every new install, while
+    # this machine and any warm-cache install kept working. Pin the minor.
+    "taskbargap~=0.1.0",
 ]
 
 [project.optional-dependencies]

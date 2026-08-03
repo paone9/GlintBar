@@ -281,3 +281,23 @@ def test_valid_metrics_drops_unknown():
 def test_valid_metrics_empty_falls_back_to_all():
     assert gm._valid_metrics([]) == list(gm.AVAILABLE)
     assert gm._valid_metrics(None) == list(gm.AVAILABLE)
+
+
+# --- _effective_align: don't trust an unmeasured left edge (taskbargap integration) ---
+
+def test_effective_align_honours_configured_align_when_measured():
+    assert gm._effective_align("left", True) == "left"
+    assert gm._effective_align("center", True) == "center"
+    assert gm._effective_align("right", True) == "right"
+
+
+def test_effective_align_overrides_to_right_when_unmeasured():
+    # gap_l is a 30% heuristic here and can sit on top of real taskbar buttons;
+    # gap_r is independently sanity-checked, so right is the only safe anchor
+    assert gm._effective_align("left", False) == "right"
+    assert gm._effective_align("center", False) == "right"
+
+
+def test_effective_align_right_is_unaffected_by_measured():
+    # already anchored off the trustworthy edge, so measured is moot
+    assert gm._effective_align("right", False) == "right"

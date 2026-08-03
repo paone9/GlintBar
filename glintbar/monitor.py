@@ -32,6 +32,7 @@ from collections import deque
 from datetime import datetime
 
 import psutil
+import taskbargap
 import webview
 
 _T0 = time.monotonic()   # module init start, reported by --diag
@@ -95,15 +96,22 @@ def _nvidia_ok():
 
 class NvidiaProvider:
     kind = "nvidia"
-    metrics = ["gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock"]
     _INTERVAL = 2.0         # only spawn nvidia-smi this often; cache in between
     _FAIL_INTERVAL = 30.0   # ...and back well off once it clearly isn't answering
     _MAX_FAILS = 3          # ~6s of nothing before the tiles go blank rather than lie
+    _ORDER = ("gpu_temp", "gpu_util", "gpu_mem_pct", "gpu_power", "gpu_clock")
 
     def __init__(self):
         self._cache = {}
         self._t = 0.0
         self._fails = 0
+        # Probe once and advertise only the metrics this GPU actually reports. A GPU
+        # can name itself to nvidia-smi yet return [N/A] for everything, or expose only
+        # a subset — offering tiles that never fill is worse than not offering them, and
+        # ok=False lets _detect_gpu fall back to perf-counter utilisation.
+        vals = self.sample()
+        self.metrics = [m for m in self._ORDER if m in vals]
+        self.ok = bool(self.metrics)
 
     def sample(self):
         now = time.monotonic()
@@ -416,8 +424,12 @@ class HwinfoProvider:
 
 
 def _detect_gpu():
-    if _nvidia_ok():
-        return NvidiaProvider()
+    # NVIDIA if it actually returns telemetry (not just a name); otherwise fall back
+    # to cross-vendor utilisation via perf counters (AMD/Intel, or an NVIDIA that
+    # named itself but reported nothing).
+    nv = NvidiaProvider()
+    if nv.ok:
+        return nv
     g = PdhGpuProvider()
     if g.ok:
         return g
@@ -682,8 +694,13 @@ class Api:
 
 class SettingsApi:
     def get_config(self):
+        # measured=False means this Windows shell couldn't be read for the app-button
+        # edge, so _place() overrides "left"/"center" to "right" regardless of this
+        # setting - tell the panel why, rather than let it show a choice that isn't
+        # actually in effect.
         return {"config": CONFIG, "metric_ids": METRIC_IDS,
-                "available": AVAILABLE, "gpu_kind": GPU_KIND}
+                "available": AVAILABLE, "gpu_kind": GPU_KIND,
+                "align_forced_right": not EMBED_STATE.get("measured", False)}
 
     def _close(self):
         _close_settings()
@@ -761,33 +778,15 @@ def _win32_setup(user32):
     user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
     user32.GetWindowThreadProcessId.restype = wt.DWORD
     user32.IsWindowVisible.argtypes = [wt.HWND]
+    user32.IsIconic.argtypes = [wt.HWND]
+    user32.IsIconic.restype = wt.BOOL
     user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
-    try:                                       # Win10 1607+; absent on older builds
-        user32.GetDpiForWindow.argtypes = [wt.HWND]
-        user32.GetDpiForWindow.restype = wt.UINT
-    except AttributeError:
-        pass
     try:                                       # HWND is a handle — argtypes or it truncates
         d = ctypes.windll.dwmapi
         d.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
         d.DwmGetWindowAttribute.restype = ctypes.c_long
     except Exception:
         pass
-
-
-def _monitor_scale(user32, hwnd, fallback=1.0):
-    """DPI scale of the monitor THIS window is on. The process is per-monitor-v2
-    aware, so WebView2 renders CSS at each monitor's own scale — the frame must be
-    sized by the same per-monitor factor, not one global GetDpiForSystem() taken
-    from the primary. That mismatch is what makes the bar and popups the wrong size
-    on a screen whose scaling differs from the primary. Falls back on Win < 1607."""
-    try:
-        dpi = user32.GetDpiForWindow(hwnd)
-        if dpi:
-            return dpi / 96.0
-    except Exception:
-        pass
-    return fallback
 
 
 def _rect(user32, hwnd):
@@ -800,21 +799,6 @@ def _work_area(user32):
     r = wt.RECT()
     user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)  # SPI_GETWORKAREA
     return r.left, r.top, r.right, r.bottom
-
-
-def _taskbar_region(user32):
-    """Return (taskbar_rect, empty_gap) between app buttons and the tray, physical px."""
-    tray = user32.FindWindowW("Shell_TrayWnd", None)
-    if not tray:
-        return None
-    tbl, tbt, tbr, tbb = _rect(user32, tray)
-    # right bound = left edge of the notification/clock cluster
-    notify = user32.FindWindowExW(tray, None, "TrayNotifyWnd", None)
-    right = _rect(user32, notify)[0] if notify else tbr
-    # left bound = right edge of the app-button strip (Win10 rebar; may be absent on Win11)
-    rebar = user32.FindWindowExW(tray, None, "ReBarWindow32", None)
-    left = _rect(user32, rebar)[2] if rebar else tbl + int((tbr - tbl) * 0.30)
-    return (tbl, tbt, tbr, tbb, tray), (left, right)
 
 
 # Windows shell UI whose host windows can momentarily cover the whole monitor
@@ -840,14 +824,18 @@ def _is_cloaked(hwnd):
 
 
 def _fullscreen_on_bar_monitor(user32):
-    """Hide exactly when the bar's monitor is owned by an unobstructed fullscreen
-    app — mirroring how that monitor's own taskbar hides. The test is: the TOPMOST
-    real window on our monitor covers the whole monitor. So a fullscreen video hides
-    us even while you work on the other screen (it's still topmost on this one), but
-    a normal window opened on top of it shows us again (that window is now topmost
-    and doesn't cover). We stop at the first real window, not hunt for a covering one
-    behind it — that hunt was the bug that hid the bar under a window-on-top and let
-    an unfocused fullscreen leak through."""
+    """Hide when the app the user is looking at is presenting fullscreen on the bar's
+    monitor — mirroring how that monitor's own taskbar hides. Rule: hide iff the
+    process that owns the TOPMOST real window on our monitor also owns a window that
+    covers the whole monitor.
+
+    That one rule covers every case we've hit. A fullscreen video hides us, even
+    while you work on the other screen (it's still topmost here). A media player's own
+    control bar popping up on hover keeps us hidden, because that bar belongs to the
+    same app as the fullscreen video behind it. A different app's window opened on top
+    shows us again, because its process has no covering window. And a screen-share's
+    click-through border is ignored outright, so the taskbar showing through it shows
+    us too."""
     our = EMBED_STATE.get("hwnd")
     if not our:
         return False
@@ -857,41 +845,52 @@ def _fullscreen_on_bar_monitor(user32):
     if not user32.GetMonitorInfoW(our_mon, ctypes.byref(mi)):
         return False
     mon = mi.rcMonitor
-    state = {"hide": False, "done": False}
+    our_pid = wt.DWORD()                           # skip ALL of our own windows (bar + popups),
+    user32.GetWindowThreadProcessId(our, ctypes.byref(our_pid))   # not just the bar
+    top_pid = [None]           # process owning the topmost real window on this monitor
+    covering = set()           # processes with a window covering the whole monitor
 
     def _cb(hwnd, _):
-        if state["done"]:
-            return False
-        if hwnd == our or not user32.IsWindowVisible(hwnd) or _is_cloaked(hwnd):
-            return True                            # ours / hidden / cloaked -> keep looking
+        if not user32.IsWindowVisible(hwnd) or _is_cloaked(hwnd):
+            return True                            # hidden / cloaked
+        if user32.IsIconic(hwnd):
+            return True                            # minimized: IsWindowVisible is still True
+            # for a minimized window, and Windows parks it off-screen rather than
+            # moving it off this monitor - so it can otherwise wrongly claim "the
+            # topmost real window here" ahead of an actual fullscreen app and block
+            # the whole hide decision (found live: a minimized WhatsApp window sitting
+            # over a fullscreen VLC kept the bar visible).
         if user32.MonitorFromWindow(hwnd, 2) != our_mon:
             return True                            # on another screen
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == 0 or pid.value == our_pid.value:
+            return True                            # phantom / one of ours
         buf = ctypes.create_unicode_buffer(64)
         user32.GetClassNameW(hwnd, buf, 64)
         if buf.value in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
-            return True                            # desktop / taskbar -> keep looking
+            return True                            # desktop / taskbar
         try:                                       # transient shell surfaces (Start, Search, IME)
-            pid = wt.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if psutil.Process(pid.value).name().lower() in _SHELL_PROCS:
                 return True
         except Exception:
             pass
-        if user32.GetWindowLongW(hwnd, -20) & 0x20:    # WS_EX_TRANSPARENT (GWL_EXSTYLE)
+        if user32.GetWindowLongW(hwnd, -20) & 0x20:    # WS_EX_TRANSPARENT (GWL_EXSTYLE):
             return True                            # click-through overlay (e.g. a screen-share
-            # border): the taskbar shows straight through it, so it doesn't hide us
+            # border); the taskbar shows straight through it, so it doesn't hide us
         r = wt.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(r))
         if r.right <= r.left or r.bottom <= r.top:
-            return True                            # zero-area phantom -> keep looking
-        # first real top-level window on our monitor: is IT fullscreen?
-        state["hide"] = (r.left <= mon.left and r.top <= mon.top
-                         and r.right >= mon.right and r.bottom >= mon.bottom)
-        state["done"] = True
-        return False
+            return True                            # zero-area phantom
+        if top_pid[0] is None:                     # first survivor = topmost real window
+            top_pid[0] = pid.value
+        if (r.left <= mon.left and r.top <= mon.top
+                and r.right >= mon.right and r.bottom >= mon.bottom):
+            covering.add(pid.value)
+        return True                                # scan them all
 
     user32.EnumWindows(_ENUM_PROC(_cb), 0)
-    return state["hide"]
+    return top_pid[0] is not None and top_pid[0] in covering
 
 
 class LASTINPUTINFO(ctypes.Structure):
@@ -971,6 +970,19 @@ def _place_topmost(u, hwnd, x, y, w, h, show, ex_add=0):
     u.ShowWindow(hwnd, show)
 
 
+def _effective_align(configured_align, measured):
+    """The alignment to actually use, given whether the gap's left edge is
+    trustworthy. Pure and Win32-free so it's directly testable: gap_l is a 30%
+    heuristic when `measured` is False (taskbargap couldn't read the app-button
+    edge), and can sit on top of real buttons. gap_r is independently
+    sanity-checked against the tray cluster, so right-aligning is safe
+    regardless of `measured` - anchor there rather than trust the unmeasured
+    left edge. Defaults closed: an unknown `measured` is treated as False."""
+    if configured_align != "right" and not measured:
+        return "right"
+    return configured_align
+
+
 def _place(css_width):
     """Resize/anchor the floating bar to fit `css_width` within the taskbar gap.
     If the gap is too narrow to fit the bar, it yields (hides) rather than cover
@@ -994,7 +1006,7 @@ def _place(css_width):
     st["yielded"] = False
     w = min(int(round(css_width * scale)) + 6, avail) if css_width else avail
     w = max(w, 160)                  # avail >= 160 here, so w <= avail: never overlaps the buttons
-    align = CONFIG.get("align", "right")
+    align = _effective_align(CONFIG.get("align", "right"), st.get("measured", False))
     if align == "left":
         x1 = gap_l + 12
     elif align == "center":
@@ -1008,7 +1020,7 @@ def _place(css_width):
     return True
 
 
-def _overlay(user32, gap_l, gap_r, top, height, scale):
+def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False):
     """Float our window over the empty taskbar gap as a topmost, input-owning bar."""
     hwnd = 0
     for _ in range(60):
@@ -1024,15 +1036,12 @@ def _overlay(user32, gap_l, gap_r, top, height, scale):
     ex = (ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_APPWINDOW
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
     user32.ShowWindow(hwnd, 0)     # hide/show so Windows drops the taskbar/Alt-Tab entry
+    # scale is already the taskbar's own monitor DPI (taskbargap.find_gap() reads it
+    # via GetDpiForWindow on the tray), so unlike GetDpiForSystem() there is no
+    # primary-vs-actual-monitor mismatch left to correct after the first placement.
     EMBED_STATE.update(hwnd=hwnd, user32=user32, gap_l=gap_l, gap_r=gap_r,
-                       top=top, height=height, scale=scale)
-    _place(None)   # position on the taskbar's monitor (width uses the bootstrap scale)
-    # Now that it sits on the right monitor, size everything by THAT monitor's DPI
-    # rather than the primary's — the frame must match how WebView2 scales the CSS.
-    mscale = _monitor_scale(user32, hwnd, scale)
-    if abs(mscale - scale) > 0.01:
-        EMBED_STATE["scale"] = mscale
-        _place(None)
+                       top=top, height=height, scale=scale, measured=measured)
+    _place(None)
 
 
 def _watcher():
@@ -1063,19 +1072,19 @@ def _watcher():
                 _place(st.get("last_css"))        # re-fit and re-assert topmost
             # normal upkeep: re-assert topmost and re-fit if the taskbar gap moved
             u.SetWindowPos(st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-            region = _taskbar_region(u)
-            if not region:
+            gap = taskbargap.find_gap()
+            if gap is None:
                 continue
-            (tbl, tbt, tbr, tbb, tray), (gl, gr) = region
             # follow the bar's monitor DPI: docking can move it between a 150% panel
             # and a 100% external, and it must re-size to the screen it lands on
-            new_scale = _monitor_scale(u, st["hwnd"], st["scale"])
-            dpi_changed = abs(new_scale - st["scale"]) > 0.01
+            dpi_changed = abs(gap.scale - st["scale"]) > 0.01
             if dpi_changed:
-                st["scale"] = new_scale
-            if (dpi_changed or abs(gl - st["gap_l"]) > 8 or abs(gr - st["gap_r"]) > 8
-                    or tbt != st["top"]):
-                st["gap_l"], st["gap_r"], st["top"], st["height"] = gl, gr, tbt, tbb - tbt
+                st["scale"] = gap.scale
+            measured_changed = gap.measured != st.get("measured", True)
+            if (dpi_changed or measured_changed or abs(gap.left - st["gap_l"]) > 8
+                    or abs(gap.right - st["gap_r"]) > 8 or gap.top != st["top"]):
+                st["gap_l"], st["gap_r"], st["top"], st["height"], st["measured"] = (
+                    gap.left, gap.right, gap.top, gap.height, gap.measured)
                 _place(st.get("last_css"))
         except Exception:
             pass
@@ -1661,11 +1670,7 @@ def _diag():
         pass
     print("  module init (imports + provider detection): %.2fs" % (time.monotonic() - _T0))
     u = ctypes.windll.user32
-    try:
-        if not u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            u.SetProcessDPIAware()
-    except Exception:
-        pass
+    taskbargap.enable_dpi_awareness()
     _win32_setup(u)
     try:
         # system DPI is the primary's; the bar sizes by its OWN monitor's DPI, so
@@ -1691,10 +1696,10 @@ def _diag():
         rebar = u.FindWindowExW(tray, None, "ReBarWindow32", None)
         print("  TrayNotifyWnd :", _rect(u, notify) if notify else "not found (use taskbar right edge)")
         print("  ReBarWindow32 :", _rect(u, rebar) if rebar else "not found (Win11: 30% heuristic)")
-    region = _taskbar_region(u)
-    if region:
-        (tbl, tbt, tbr, tbb, _t), (gl, gr) = region
-        print("  gap           : x %d..%d (%d px wide) at y=%d" % (gl, gr, gr - gl, tbt))
+    gap = taskbargap.find_gap()
+    if gap:
+        print("  gap (taskbargap): x %d..%d (%d px wide) at y=%d, scale %.2f, measured=%s"
+              % (gap.left, gap.right, gap.width, gap.top, gap.scale, gap.measured))
         print("  verdict       : would EMBED in the taskbar gap")
     else:
         print("  verdict       : would FALL BACK to a floating bar (no gap found)")
@@ -1763,16 +1768,7 @@ def _run():
     user32 = ctypes.windll.user32
     # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
     # with different scaling (matches how WebView2 renders). Fall back on old Windows.
-    ok = False
-    try:
-        ok = bool(user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)))
-    except Exception:
-        ok = False
-    if not ok:
-        try:
-            user32.SetProcessDPIAware()
-        except Exception:
-            pass
+    taskbargap.enable_dpi_awareness()
     _win32_setup(user32)
     try:
         scale = user32.GetDpiForSystem() / 96.0
@@ -1781,14 +1777,14 @@ def _run():
 
     embed_args = None
     if DOCK == "taskbar":
-        region = _taskbar_region(user32)
-        if region:
-            (tbl, tbt, tbr, tbb, tray), (gap_l, gap_r) = region
-            height = tbb - tbt                       # fill the taskbar row
-            x_phys = gap_l + 12
-            width = max(600, (gap_r - 20) - x_phys)  # span the empty gap
-            y_phys = tbt
-            embed_args = (gap_l, gap_r, tbt, height, scale)
+        gap = taskbargap.find_gap()
+        if gap:
+            height = gap.height                      # fill the taskbar row
+            x_phys = gap.left + 12
+            width = max(600, (gap.right - 20) - x_phys)  # span the empty gap
+            y_phys = gap.top
+            scale = gap.scale     # the taskbar's own monitor, not just the primary's
+            embed_args = (gap.left, gap.right, gap.top, height, scale, gap.measured)
     if DOCK != "taskbar" or embed_args is None:
         left, top, right, bottom = _work_area(user32)
         width, height = right - left, BAR_HEIGHT

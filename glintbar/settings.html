@@ -54,6 +54,7 @@
 <div class="group">
   <div class="lbl">Align in taskbar</div>
   <div class="seg" id="align"></div>
+  <div class="sub" id="alignNote" style="margin:5px 0 0;display:none"></div>
 </div>
 
 <div class="group">
@@ -90,6 +91,7 @@ const PICKS = {
 };
 let ORDER = Object.keys(LABELS);
 let AVAIL = Object.keys(LABELS);
+let alignForcedRight = false;
 let cfg = { metrics:ORDER.slice(), size:"M", align:"right", sparklines:true, alerts:true, sound:true, away_watch:true };
 
 function renderMetrics(){
@@ -122,6 +124,12 @@ function renderAll(){
   renderMetrics();
   renderSeg("size",[["S","Compact"],["M","Normal"],["L","Large"]],"size");
   renderSeg("align",[["left","Left"],["center","Center"],["right","Right"]],"align");
+  const note = document.getElementById("alignNote");
+  note.style.display = alignForcedRight ? "" : "none";
+  note.textContent = alignForcedRight
+    ? "Right-anchored for now: this Windows shell doesn't expose the app-button "
+      + "edge, so Left/Center would risk covering a taskbar button."
+    : "";
   document.getElementById("sparklines").checked = !!cfg.sparklines;
   document.getElementById("alerts").checked = cfg.alerts !== false;
   document.getElementById("sound").checked = cfg.sound !== false;
@@ -179,6 +187,7 @@ async function loadConfig(){
     if (r && r.metric_ids) ORDER = r.metric_ids;
     if (r && r.available) AVAIL = r.available;
     if (r && r.config) cfg = Object.assign(cfg, r.config);
+    alignForcedRight = !!(r && r.align_forced_right);
     cfg.metrics = ORDER.filter(x=>cfg.metrics.includes(x) && AVAIL.includes(x));
     loaded = true;
     saveBtn.disabled = false;
