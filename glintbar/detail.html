@@ -62,10 +62,22 @@ function draw(cv,data,m,colr){
 }
 
 let lastMetric = null;
+// Polls at 10Hz only while a metric is actually showing; 1Hz the rest of the
+// time (which is most of the time - the popup is hidden far more than shown).
+// A fixed 10Hz setInterval was doing a full IPC round trip to render nothing.
+const ACTIVE_MS = 100, IDLE_MS = 1000;
+// One owned timer, always cleared before a new one is armed - tick() is called
+// directly (not scheduled) from both pywebviewready and visibilitychange, and
+// without this a call landing while a chain is already scheduled forks a
+// second permanent chain rather than resuming the first. clearTimeout here
+// also covers two tick() bodies racing on the same await: whichever calls
+// schedule() last is the only timer left standing either way.
+let timer = null;
+function schedule(ms){ clearTimeout(timer); timer = setTimeout(tick, ms); }
 async function tick(){
-  let d; try{ d=await window.pywebview.api.get(); }catch(e){ return; }
-  if(!d || !d.metric){ lastMetric=null; return; }
-  const m=META[d.metric]; if(!m) return;
+  let d; try{ d=await window.pywebview.api.get(); }catch(e){ schedule(IDLE_MS); return; }
+  if(!d || !d.metric){ lastMetric=null; schedule(IDLE_MS); return; }
+  const m=META[d.metric]; if(!m){ schedule(IDLE_MS); return; }
   if(d.metric !== lastMetric){   // new tile: wipe the previous frame before drawing this one
     lastMetric = d.metric;
     document.getElementById("stats").textContent = "";
@@ -87,6 +99,13 @@ async function tick(){
   document.getElementById("stats").textContent =
     (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  since launch`:"") + extra;
   draw(document.getElementById("cv"), d.hist||[], m, color(c));
+  schedule(ACTIVE_MS);
 }
-window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 100); });
+window.addEventListener("pywebviewready", tick);
+// The native ShowWindow that re-opens this popup (SW_SHOWNA, so it never steals
+// focus - visibilitychange fires either way) can land while the idle 1Hz tick
+// is mid-sleep, which would otherwise show stale content for up to a second.
+// This ticks immediately on that transition instead of waiting for the timer;
+// the idle poll stays on as a backstop in case this event ever doesn't fire.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 </script>
