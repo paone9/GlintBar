@@ -301,3 +301,78 @@ def test_effective_align_overrides_to_right_when_unmeasured():
 def test_effective_align_right_is_unaffected_by_measured():
     # already anchored off the trustworthy edge, so measured is moot
     assert gm._effective_align("right", False) == "right"
+
+
+# --- _fs_debounce: don't hide over a transient shell surface's brief false
+# positive - and symmetrically, don't un-hide over one either. _watcher calls
+# this generic function twice per tick with independent streak state: once with
+# the raw verdict (debouncing hide) and once with its negation (debouncing
+# un-hide), so a spurious single-tick misread can't flip either direction.
+
+def test_fs_debounce_false_never_starts_a_streak():
+    assert gm._fs_debounce(False, None, 100.0) == (False, None)
+    assert gm._fs_debounce(False, 90.0, 100.0) == (False, None)
+
+
+def test_fs_debounce_first_true_tick_starts_the_clock_but_does_not_hide():
+    # a ~1s shell toast is exactly this: one True tick, then gone
+    should_hide, fs_since = gm._fs_debounce(True, None, 100.0)
+    assert should_hide is False
+    assert fs_since == 100.0
+
+
+def test_fs_debounce_not_hidden_before_hold_elapses():
+    should_hide, fs_since = gm._fs_debounce(True, 100.0, 100.0 + gm.FS_HIDE_HOLD_S - 0.1)
+    assert should_hide is False
+    assert fs_since == 100.0     # streak start is preserved, not reset
+
+
+def test_fs_debounce_hides_once_hold_elapses():
+    should_hide, fs_since = gm._fs_debounce(True, 100.0, 100.0 + gm.FS_HIDE_HOLD_S)
+    assert should_hide is True
+    assert fs_since == 100.0
+
+
+def test_fs_debounce_clearing_resets_the_streak():
+    # verdict flips back to False mid-streak (the shell surface disappeared)
+    assert gm._fs_debounce(False, 100.0, 100.5) == (False, None)
+
+
+# --- _fs_streaks: one tick of both directions at once, including the reset
+# between them - the state transition _watcher relies on but can't unit-test
+# on its own, since it only exists as a line inside the Win32-coupled loop.
+
+def test_fs_streaks_covering_builds_hide_streak_and_clears_clear_streak():
+    # mid-way through a clear streak when fullscreen resumes: the clear streak
+    # must reset to None, not keep counting toward an un-hide that's now wrong
+    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+        True, None, 90.0, 100.0)
+    assert (should_hide, should_show) == (False, False)
+    assert fs_since == 100.0      # hide streak just started
+    assert clear_since is None    # clear streak reset, not left at 90.0
+
+
+def test_fs_streaks_hides_once_hide_hold_elapses():
+    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+        True, 100.0, None, 100.0 + gm.FS_HIDE_HOLD_S)
+    assert should_hide is True
+    assert clear_since is None
+
+
+def test_fs_streaks_clearing_builds_clear_streak_and_resets_hide_streak():
+    # mid-way through a hide streak when the screen clears: the hide streak
+    # must reset, matching _fs_debounce's own reset-on-False behaviour
+    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+        False, 90.0, None, 100.0)
+    assert (should_hide, should_show) == (False, False)
+    assert fs_since is None
+    assert clear_since == 100.0   # clear streak just started
+
+
+def test_fs_streaks_shows_after_one_confirming_tick_not_the_full_hide_hold():
+    # FS_CLEAR_HOLD_S is one tick, not FS_HIDE_HOLD_S's three - this is the
+    # asymmetry the un-hide side is supposed to have
+    assert gm.FS_CLEAR_HOLD_S < 1.0 < gm.FS_HIDE_HOLD_S
+    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+        False, None, 100.0, 100.0 + gm.FS_CLEAR_HOLD_S)
+    assert should_show is True

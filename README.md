@@ -236,8 +236,9 @@ GlintBar is meant to be easy to review. It's plain Python with no binaries and n
 obfuscation, it needs no admin, and it makes no internet connections: no
 telemetry, no update checks, nothing. The only network use is optional and local:
 reading LibreHardwareMonitor on `127.0.0.1` if you turn that integration on. It
-only reads system metrics and writes `config.json` and logs to
-`%LOCALAPPDATA%\GlintBar`.
+only reads system metrics and writes `config.json`, logs, and its WebView2
+browser profile (kept persistent so it doesn't leak a fresh copy into `%TEMP%`
+on every launch) to `%LOCALAPPDATA%\GlintBar`.
 
 CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
 static analysis of the Python, the UI JavaScript, and the workflows themselves.

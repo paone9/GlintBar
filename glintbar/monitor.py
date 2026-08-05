@@ -781,6 +781,13 @@ def _win32_setup(user32):
     user32.IsIconic.argtypes = [wt.HWND]
     user32.IsIconic.restype = wt.BOOL
     user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
+    user32.SetWinEventHook.argtypes = [wt.DWORD, wt.DWORD, wt.HANDLE, ctypes.c_void_p,
+                                       wt.DWORD, wt.DWORD, wt.DWORD]
+    user32.SetWinEventHook.restype = wt.HANDLE
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
+    user32.GetMessageW.restype = wt.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
     try:                                       # HWND is a handle — argtypes or it truncates
         d = ctypes.windll.dwmapi
         d.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
@@ -952,6 +959,22 @@ def _top_mem_process():
 
 
 EMBED_STATE = {}
+# _watcher ticks once a second, so this is effectively rounded up to the next
+# tick boundary regardless of the exact value: 2 ticks (~2s hold, ~3s total
+# latency including detection lag), not a literal 1.5s. Anything in (1.0, 2.0]
+# behaves identically; only crossing a whole second changes the actual hold.
+# Kept in seconds, not a tick count, because that's the unit the debounce
+# itself (and its tests) are reasoned about in.
+FS_HIDE_HOLD_S = 1.5
+# The un-hide side doesn't need the same hold: hiding late leaves the bar sitting
+# over a fullscreen video (visible, jarring, the exact thing this feature exists
+# to prevent), while showing late just means the bar is briefly still missing
+# after you've already changed context (mild). One confirming tick is enough to
+# reject the single-tick misread the debounce exists for, and _fs_debounce's
+# first tick always just starts the clock regardless of hold_s (see above), so
+# any value at or below one tick interval (~1s) reaches that in a single
+# confirming tick - kept comfortably under 1.0, not at it, for tick-timing jitter.
+FS_CLEAR_HOLD_S = 0.5
 HWND_TOPMOST = -1
 SWP_NOMOVE_SIZE_ACT = 0x0001 | 0x0002 | 0x0010   # NOSIZE|NOMOVE|NOACTIVATE
 WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80, 0x08000000
@@ -1044,6 +1067,45 @@ def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False):
     _place(None)
 
 
+def _fs_debounce(condition, streak_since, now, hold_s=FS_HIDE_HOLD_S):
+    """Whether `condition` has held continuously for `hold_s`, and the streak
+    state to store next. Pure and Win32-free so the debounce timing is directly
+    testable, and generic enough to debounce either direction of a hide
+    decision: called with the raw fullscreen verdict it debounces hiding, and
+    called with its negation it debounces un-hiding the same way, each against
+    its own streak variable.
+
+    A genuine fullscreen video or game holds the covering verdict True for far
+    longer than `hold_s`; a transient shell surface (a toast, a volume/
+    brightness OSD, a XAML flyout) that briefly reports a full-monitor host
+    window for compositing purposes does not, so it never crosses the
+    threshold either way - `streak_since` is None whenever we are not
+    currently mid-streak.
+    """
+    if not condition:
+        return False, None
+    if streak_since is None:
+        return False, now      # start the clock; don't act on a single tick
+    return (now - streak_since) >= hold_s, streak_since
+
+
+def _fs_streaks(fs, fs_since, clear_since, now):
+    """Advance both the hide-streak and the clear-streak for one tick, given
+    this tick's raw fullscreen verdict. Pure and Win32-free: the two streaks
+    are mutually exclusive (only one can be mid-hold at a time - covering and
+    clear can't both be true), and that reset is exercised directly here
+    instead of living only as a state mutation inside _watcher's loop.
+
+    Returns (should_hide, should_show, fs_since, clear_since): the verdicts to
+    act on and the streak state to store next either way.
+    """
+    should_hide, fs_since = _fs_debounce(fs, fs_since, now)
+    if fs:
+        return should_hide, False, fs_since, None
+    should_show, clear_since = _fs_debounce(True, clear_since, now, FS_CLEAR_HOLD_S)
+    return False, should_show, fs_since, clear_since
+
+
 def _watcher():
     """Keep the bar correctly placed and on top as the taskbar changes over time."""
     while True:
@@ -1057,16 +1119,27 @@ def _watcher():
             u = st["user32"]
             # hide while a fullscreen app (video, game, slideshow) owns the screen
             fs = _fullscreen_on_bar_monitor(u)
+            should_hide, should_show, st["fs_since"], st["clear_since"] = _fs_streaks(
+                fs, st.get("fs_since"), st.get("clear_since"), time.monotonic())
             if fs:
-                # Gate on whether the bar is actually visible rather than on our own
-                # flag: if anything else re-showed it, the flag alone would say
-                # "already handled" and leave it stranded over the fullscreen app.
-                if u.IsWindowVisible(st["hwnd"]):
-                    u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
-                    _hide_detail()
-                st["hidden_fs"] = True
+                if should_hide:
+                    # Gate on whether the bar is actually visible rather than on our
+                    # own flag: if anything else re-showed it, the flag alone would
+                    # say "already handled" and leave it stranded over the fullscreen
+                    # app.
+                    if u.IsWindowVisible(st["hwnd"]):
+                        u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
+                        _hide_detail()
+                    st["hidden_fs"] = True
                 continue
-            if st.get("hidden_fs"):
+            # Symmetric with the hide side: a spurious single-tick False (the same
+            # kind of transient shell surface, just misjudged the other way) must
+            # not instantly un-hide the bar over a still-fullscreen app. Debounced
+            # against its own streak, not fs_since, so a fullscreen app clearing
+            # doesn't have to wait out a streak that was already mid-hold - and
+            # held for only one confirming tick (FS_CLEAR_HOLD_S), since showing
+            # a beat late is mild while hiding a beat late is the jarring case.
+            if st.get("hidden_fs") and should_show:
                 st["hidden_fs"] = False
                 u.ShowWindow(st["hwnd"], 5)       # SW_SHOW
                 _place(st.get("last_css"))        # re-fit and re-assert topmost
@@ -1088,6 +1161,102 @@ def _watcher():
                 _place(st.get("last_css"))
         except Exception:
             pass
+
+
+EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_OBJECT_SHOW = 0x8002
+OBJID_WINDOW = 0
+WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS = 0x0000, 0x0002
+_NUDGE_FLAGS = ctypes.c_uint(0x0010 | 0x4000)   # SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+_WINEVENTPROC = ctypes.WINFUNCTYPE(
+    None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
+
+
+def _repaint_on_foreground_change(user32):
+    """Force the bar to re-present a frame the instant a new top-level window
+    appears, instead of waiting up to a second for the next watcher tick.
+
+    Found live, frame by frame: right-clicking the taskbar inserts a new
+    topmost window (the context menu) into the z-order, and for a single
+    composited frame WebView2 fails to paint - the bar stays IsWindowVisible
+    the whole time (this is not a hide/show decision misfiring), it just
+    doesn't draw, so the taskbar's own background shows through for
+    ~150-300ms. The same thing happens for a Windows toast notification, which
+    proved EVENT_SYSTEM_FOREGROUND alone isn't enough: toasts are deliberately
+    non-activating (that's the point of a toast), so they never take the
+    foreground and never fire that event. EVENT_OBJECT_SHOW covers both cases,
+    since it fires whenever a window becomes visible regardless of focus.
+
+    Needs a real Win32 message loop on this thread: an out-of-context hook is
+    delivered through the hooking thread's own message queue, not a callback
+    from nowhere.
+
+    EVENT_OBJECT_SHOW with a NULL window filter is process-wide: every window
+    becoming visible anywhere on the desktop is marshalled to this thread and
+    runs this callback, not just the ones near the bar. SetWinEventHook has no
+    filter for that (only event range, process ID, and thread ID - none of
+    which help, since which process will show a window over the bar is exactly
+    what can't be known in advance). Measured against 1532 real window-show
+    events generated over 30s (~51/s, well above real desktop usage): +2.03
+    CPU-seconds total, ~1.3ms/event. That cost is dominated by the OS
+    marshalling plus the ctypes-to-Python callback overhead, not by anything
+    in this callback body. A normal desktop produces on the order of 1-5
+    window-shows/second, one to two orders of magnitude below the test rate,
+    so real-world cost lands around 0.1-0.6% of a core - bounded and
+    proportional to actual activity, not worth narrowing further.
+    """
+    last_nudge = [0.0]
+
+    def _cb(_hook, event, _hwnd, idObject, _child, _thread, _ts):
+        if event == EVENT_OBJECT_SHOW and idObject != OBJID_WINDOW:
+            return   # a child control/element showing, not a new top-level window
+        st = EMBED_STATE
+        bar = st.get("hwnd")
+        if not bar or st.get("user_hidden") or st.get("hidden_fs"):
+            return
+        now = time.monotonic()
+        # A single right-click (or toast) can fire several of these events in
+        # quick succession (the menu's own intermediate windows). Nudging on each
+        # one measured *worse* than nudging once: overlapping resize operations
+        # can cascade into a longer visible glitch than the one being fixed.
+        # One nudge per burst is enough - the debounce is deliberately short so a
+        # second, genuinely separate trigger straight after isn't swallowed.
+        if now - last_nudge[0] < 0.2:
+            return
+        last_nudge[0] = now
+        try:
+            r = wt.RECT()
+            user32.GetWindowRect(bar, ctypes.byref(r))
+            w, h = r.right - r.left, r.bottom - r.top
+            # RedrawWindow/WM_PAINT is a no-op for WebView2's actual content: it
+            # renders through its own DirectComposition surface, not the GDI paint
+            # cycle. A real (if 1px) geometry change forces DWM/WebView2 to fully
+            # reallocate and recomposite that surface, which a topmost reassert
+            # alone does not.
+            #
+            # This runs on the WinEvent hook thread, against a window owned by the
+            # pywebview/WebView2 UI thread - a synchronous SetWindowPos here blocks
+            # until that thread pumps its message loop, same trap taskbargap's
+            # GapWatcher documents for exactly this reason. SWP_ASYNCWINDOWPOS
+            # posts instead of sends, so the hook thread can't stall behind it.
+            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h + 1, _NUDGE_FLAGS)
+            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h, _NUDGE_FLAGS)
+        except Exception:
+            pass
+
+    proc = _WINEVENTPROC(_cb)      # keep alive for the thread's lifetime
+    hooks = [
+        user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                               None, proc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS),
+        user32.SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
+                               None, proc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS),
+    ]
+    if not any(hooks):
+        return
+    msg = wt.MSG()
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        user32.TranslateMessage(ctypes.byref(msg))
+        user32.DispatchMessageW(ctypes.byref(msg))
 
 
 def _parse_hotkey(spec):
@@ -1822,13 +1991,20 @@ def _run():
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
         threading.Thread(target=_hotkey_loop, daemon=True).start()
+        threading.Thread(target=_repaint_on_foreground_change, args=(user32,), daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
     _say("GlintBar starting (first launch can take a while on managed machines).\n"
          "Running attached to this console: closing it closes the bar. For a\n"
          "detached bar, use the installed `glintbar` command or start_glintbar.cmd.")
-    webview.start()
+    # Without this, pywebview's default (private_mode=True, no storage_path) makes
+    # a brand-new WebView2 profile in a fresh %TEMP% folder on every single launch:
+    # found 102 of them abandoned there, 560MB, dating back weeks, none ever
+    # cleaned up. A persistent profile under our own data dir lets WebView2 reuse
+    # its environment across launches instead of initialising one from scratch
+    # every time, and stops the leak.
+    webview.start(private_mode=False, storage_path=os.path.join(DATA_DIR, "webview2"))
 
 
 def main():

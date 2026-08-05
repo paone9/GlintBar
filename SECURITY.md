@@ -25,10 +25,13 @@ obfuscation.
 
 ## What it writes
 
-Just `config.json` and `logs/*.csv`, both in `%LOCALAPPDATA%\GlintBar` (a per-user
-data folder), not the install directory. Nothing else: no registry keys, no system
-files, no auto-start entries. If you want it to launch on login you add a shortcut
-yourself.
+`config.json`, `logs/*.csv`, and `webview2\`, all in `%LOCALAPPDATA%\GlintBar` (a
+per-user data folder), not the install directory. `webview2\` is WebView2's own
+browser profile (cache, preferences); it's kept there deliberately so it's reused
+across launches instead of leaking a fresh multi-megabyte copy into `%TEMP%` on
+every single one, which is what happens without a persistent profile path. Nothing
+else: no registry keys, no system files, no auto-start entries. If you want it to
+launch on login you add a shortcut yourself.
 
 ## What it never does
 
