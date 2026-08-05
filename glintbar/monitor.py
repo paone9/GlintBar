@@ -1172,13 +1172,8 @@ _WINEVENTPROC = ctypes.WINFUNCTYPE(
     None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
 
 
-def _repaint_on_foreground_change(user32):
-    """Disabled: crashes the process under window-churn stress, see c226a8f
-    for the A/B test that confirmed it. Its call site in _run() is commented
-    out. Kept, not deleted - the mechanism below is real and a fix needs to
-    build on this research, not redo it.
-
-    Force the bar to re-present a frame the instant a new top-level window
+def _repaint_on_foreground_change(user32, bar_uid):
+    """Force the bar to re-present a frame the instant a new top-level window
     appears, instead of waiting up to a second for the next watcher tick.
 
     Found live, frame by frame: right-clicking the taskbar inserts a new
@@ -1209,8 +1204,26 @@ def _repaint_on_foreground_change(user32):
     window-shows/second, one to two orders of magnitude below the test rate,
     so real-world cost lands around 0.1-0.6% of a core - bounded and
     proportional to actual activity, not worth narrowing further.
+
+    The nudge itself used to call SetWindowPos directly from this thread,
+    against a window owned by the pywebview/WebView2 UI thread. An A/B test
+    under window-churn stress crashed the whole process with that running and
+    survived cleanly with it disabled (c226a8f) - confirming the raw
+    cross-thread call, not the hook itself, was the problem. Checked
+    pywebview's own resize()/move() before assuming window.resize() would be
+    safer: they call the identical raw, unmarshalled SetWindowPos - the only
+    methods in that class that do, everything else (show, hide, maximize,
+    close) properly routes through WinForms' own Control.Invoke(). This does
+    the same: looks up the raw WinForms view pywebview already holds and
+    invokes the resize on its actual UI thread, rather than reaching across
+    threads directly. Re-verified against the same stress test afterward.
     """
     last_nudge = [0.0]
+    try:
+        import webview.platforms.winforms as _wf
+        from System import Func, Type
+    except Exception:
+        return   # can't safely marshal onto the UI thread; don't run unmarshalled
 
     def _cb(_hook, event, _hwnd, idObject, _child, _thread, _ts):
         if event == EVENT_OBJECT_SHOW and idObject != OBJID_WINDOW:
@@ -1229,23 +1242,30 @@ def _repaint_on_foreground_change(user32):
         if now - last_nudge[0] < 0.2:
             return
         last_nudge[0] = now
+
+        def _do_nudge():
+            try:
+                r = wt.RECT()
+                user32.GetWindowRect(bar, ctypes.byref(r))
+                w, h = r.right - r.left, r.bottom - r.top
+                # RedrawWindow/WM_PAINT is a no-op for WebView2's actual content:
+                # it renders through its own DirectComposition surface, not the
+                # GDI paint cycle. A real (if 1px) geometry change forces
+                # DWM/WebView2 to fully reallocate and recomposite that surface,
+                # which a topmost reassert alone does not.
+                user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h + 1, _NUDGE_FLAGS)
+                user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h, _NUDGE_FLAGS)
+            except Exception:
+                pass
+
         try:
-            r = wt.RECT()
-            user32.GetWindowRect(bar, ctypes.byref(r))
-            w, h = r.right - r.left, r.bottom - r.top
-            # RedrawWindow/WM_PAINT is a no-op for WebView2's actual content: it
-            # renders through its own DirectComposition surface, not the GDI paint
-            # cycle. A real (if 1px) geometry change forces DWM/WebView2 to fully
-            # reallocate and recomposite that surface, which a topmost reassert
-            # alone does not.
-            #
-            # This runs on the WinEvent hook thread, against a window owned by the
-            # pywebview/WebView2 UI thread - a synchronous SetWindowPos here blocks
-            # until that thread pumps its message loop, same trap taskbargap's
-            # GapWatcher documents for exactly this reason. SWP_ASYNCWINDOWPOS
-            # posts instead of sends, so the hook thread can't stall behind it.
-            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h + 1, _NUDGE_FLAGS)
-            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h, _NUDGE_FLAGS)
+            view = _wf.BrowserView.instances.get(bar_uid)
+            if view is None:
+                return   # can't confirm we'd be marshalling correctly; skip rather than guess
+            if view.InvokeRequired:
+                view.Invoke(Func[Type](_do_nudge))
+            else:
+                _do_nudge()
         except Exception:
             pass
 
@@ -2014,20 +2034,13 @@ def _run():
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
         threading.Thread(target=_hotkey_loop, daemon=True).start()
-        # Disabled pending a fix: an A/B test under synthetic window-churn stress
-        # (1500+ windows created/shown/destroyed over 30s) crashed the whole
-        # process with this thread running - console showed pywebview's own
-        # window.move() failing repeatedly first - and survived cleanly with it
-        # disabled, run at even higher churn. This resizes the bar's own hwnd via
-        # raw ctypes from a thread that isn't the WinForms UI thread; _watcher
-        # does the same SetWindowPos call safely once a second, but never
-        # changes size (SWP_NOSIZE) and never approaches this call rate. The
-        # likely culprit is a race between that raw resize and WinForms' own
-        # internal tracking of the same control's geometry when both are
-        # touched concurrently at high frequency. Needs a fix that doesn't
-        # resize the hwnd directly from this thread before it can safely run
-        # again; re-verify against this same stress test before re-enabling.
-        # threading.Thread(target=_repaint_on_foreground_change, args=(user32,), daemon=True).start()
+        # Re-enabled: was disabled after crashing under window-churn stress
+        # (c226a8f) because it resized the bar's hwnd via raw ctypes from a
+        # thread that isn't the WinForms UI thread. Now marshals through
+        # WinForms' own Control.Invoke() instead; re-verified against the same
+        # stress test before turning this back on.
+        threading.Thread(target=_repaint_on_foreground_change,
+                         args=(user32, bar.uid), daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
