@@ -1991,7 +1991,20 @@ def _run():
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
         threading.Thread(target=_hotkey_loop, daemon=True).start()
-        threading.Thread(target=_repaint_on_foreground_change, args=(user32,), daemon=True).start()
+        # Disabled pending a fix: an A/B test under synthetic window-churn stress
+        # (1500+ windows created/shown/destroyed over 30s) crashed the whole
+        # process with this thread running - console showed pywebview's own
+        # window.move() failing repeatedly first - and survived cleanly with it
+        # disabled, run at even higher churn. This resizes the bar's own hwnd via
+        # raw ctypes from a thread that isn't the WinForms UI thread; _watcher
+        # does the same SetWindowPos call safely once a second, but never
+        # changes size (SWP_NOSIZE) and never approaches this call rate. The
+        # likely culprit is a race between that raw resize and WinForms' own
+        # internal tracking of the same control's geometry when both are
+        # touched concurrently at high frequency. Needs a fix that doesn't
+        # resize the hwnd directly from this thread before it can safely run
+        # again; re-verify against this same stress test before re-enabling.
+        # threading.Thread(target=_repaint_on_foreground_change, args=(user32,), daemon=True).start()
     threading.Thread(target=away_loop, daemon=True).start()
     t = threading.Thread(target=sampler_loop, daemon=True)
     t.start()
