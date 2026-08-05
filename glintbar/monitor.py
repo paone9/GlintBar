@@ -1173,7 +1173,12 @@ _WINEVENTPROC = ctypes.WINFUNCTYPE(
 
 
 def _repaint_on_foreground_change(user32):
-    """Force the bar to re-present a frame the instant a new top-level window
+    """Disabled: crashes the process under window-churn stress, see c226a8f
+    for the A/B test that confirmed it. Its call site in _run() is commented
+    out. Kept, not deleted - the mechanism below is real and a fix needs to
+    build on this research, not redo it.
+
+    Force the bar to re-present a frame the instant a new top-level window
     appears, instead of waiting up to a second for the next watcher tick.
 
     Found live, frame by frame: right-clicking the taskbar inserts a new
@@ -1615,7 +1620,6 @@ def away_loop():
                 # threshold. Paying for it every tick regardless of away state was
                 # the actual dominant idle cost, not anything in the polling loops
                 # that looked like more obvious suspects.
-                tops = _top_cpu_processes()   # ONE measurement per interval (~AWAY_POLL window)
                 if not away:
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
@@ -1623,6 +1627,18 @@ def away_loop():
                              "ram_first": None, "ram_last": 0.0, "ram_peak": 0.0,
                              "temp_key": None,
                              "busy_samples": 0, "samples": 0}
+                    # process_iter() caches Process objects, so cpu_percent(None)
+                    # is a delta since that object's own last check - which, now
+                    # that this only runs while actually away, could be however
+                    # long it's been since the last away period (hours). Prime
+                    # here and throw the result away rather than let the first
+                    # real sample average CPU over that whole gap and quietly
+                    # under-report whoever was actually responsible. A report
+                    # already needs min_busy (>=4) samples, so losing this one
+                    # tick's data costs nothing.
+                    _top_cpu_processes()
+                    continue
+                tops = _top_cpu_processes()   # ONE measurement per interval (~AWAY_POLL window)
                 snap = collector.snapshot()
                 latest, hist = snap["latest"], snap["hist"]
                 cpu_win = _recent(hist, "cpu")
