@@ -1602,13 +1602,20 @@ def away_loop():
     while True:
         time.sleep(AWAY_POLL)
         try:
-            tops = _top_cpu_processes()   # ONE measurement per interval (~AWAY_POLL window)
             if not CONFIG.get("away_watch", True):
                 away, stats = False, None
                 continue
             idle = _idle_seconds()
             threshold = CONFIG.get("away_after_min", 5) * 60
             if _is_locked() or idle >= threshold:
+                # Enumerating every process on the system and querying each one's
+                # CPU time (psutil, per process) turned out live to be ~87% of all
+                # active CPU time this app uses, sampled with py-spy - and tops is
+                # only ever read below when actually away and over the busy
+                # threshold. Paying for it every tick regardless of away state was
+                # the actual dominant idle cost, not anything in the polling loops
+                # that looked like more obvious suspects.
+                tops = _top_cpu_processes()   # ONE measurement per interval (~AWAY_POLL window)
                 if not away:
                     away = True
                     stats = {"start": time.time(), "peak_cpu": 0.0, "peak_temp": 0.0,
