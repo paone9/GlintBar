@@ -11,7 +11,7 @@
         font:12px/1 "Segoe UI",system-ui,sans-serif; user-select:none; overflow:hidden; }
   body.size-S{ --valsize:12px; --lblsize:8px; --pad:6px; --cw:30px; --ch:14px; }
   body.size-L{ --valsize:16px; --lblsize:10px; --pad:12px; --cw:54px; --ch:20px; }
-  #bar{ display:flex; align-items:center; justify-content:flex-start;
+  #bar{ position:relative; display:flex; align-items:center; justify-content:flex-start;
         height:100vh; padding:0 2px; }
   #grip{ flex:0 0 auto; color:var(--dim); font-size:11px; padding:0 5px;
          cursor:move; letter-spacing:-1px; }
@@ -32,7 +32,13 @@
     box-shadow:inset 2px 0 0 var(--crit); animation:alertpulse 1.4s ease-in-out infinite; }
   .chip.alert .ic{ color:var(--crit); font-size:12px; }
   @keyframes alertpulse{ 0%,100%{ background:#f8514922; } 50%{ background:#f8514936; } }
-  #ctl{ flex:0 0 auto; display:flex; align-items:center; gap:2px; padding:0 4px 0 6px; }
+  /* sticky, not absolute: keeps its normal-flow footprint (so #bar's scrollWidth
+     still reports the true full-content width for auto-fit sizing) while visually
+     pinning to the window's real right edge once the window is forced narrower
+     than the content - the only way to reach Settings/Close, so it must never be
+     the part that silently renders off the edge of a too-narrow window. */
+  #ctl{ flex:0 0 auto; position:sticky; right:2px; z-index:1; background:var(--bg);
+        display:flex; align-items:center; gap:2px; padding:0 4px 0 6px; }
   #ctl button{ background:transparent; color:var(--dim); border:none; font-size:12px;
                cursor:pointer; padding:3px 5px; border-radius:3px; line-height:1; }
   #ctl button:hover{ color:var(--text); background:#ffffff14; }
@@ -126,8 +132,30 @@ function spark(cv,data,m,colr){
 }
 
 function neededWidthCss(){
-  const r = document.getElementById("ctl").getBoundingClientRect();
-  return Math.ceil(r.right) + 3;
+  // Measured from #ctl's last non-sticky sibling, not from #ctl itself.
+  // Two things were tried here first and both broke under real testing:
+  //   - getBoundingClientRect() on #ctl: reports its current PAINTED
+  //     position, which while stuck (see #ctl's CSS) is clamped to wherever
+  //     the window's edge currently is - not the true content width.
+  //   - offsetLeft/offsetWidth on #ctl: assumed to read the untouched layout
+  //     box regardless of the sticky paint offset, the way position:relative
+  //     elements do. Verified directly that this assumption is WRONG for
+  //     position:sticky once actually stuck: offsetLeft returns the same
+  //     clamped, stuck-visual position as getBoundingClientRect() - so this
+  //     "fix" could never detect real overflow at all, which is exactly why
+  //     a truncated alert tile never got hidden by the fix meant to hide it.
+  // A plain (non-sticky) sibling's own offsetLeft/offsetWidth genuinely is
+  // unaffected by #ctl's sticky state, since sticky only repaints the sticky
+  // element itself - it doesn't touch how earlier siblings are laid out.
+  // Walk back from #ctl to whichever sibling is actually in flow (skipping
+  // display:none ones like #recdot when not logging) and add #ctl's own
+  // offsetWidth, which - being a plain measurement of #ctl's own box, not
+  // its position - is accurate regardless of stuck state.
+  const ctl = document.getElementById("ctl");
+  let prev = ctl.previousElementSibling;
+  while (prev && getComputedStyle(prev).display === "none") prev = prev.previousElementSibling;
+  const prevEnd = prev ? (prev.offsetLeft + prev.offsetWidth) : 0;
+  return Math.ceil(prevEnd + ctl.offsetWidth) + 3;
 }
 
 const alertsEl = document.getElementById("alerts");
@@ -204,6 +232,25 @@ async function tick(){
         if(ok) sizePending = false;
       }));
     }
+    // The gap can be too tight to grant the full width the content needs (a
+    // busy taskbar, an alert that just appeared). #ctl's sticky pin (see its
+    // CSS) then paints over whatever chip lands in the reclaimed space -
+    // alerts, being last before #ctl, most often - which can leave its icon
+    // showing with its label and value silently painted over. Hide the whole
+    // alert tile in that case rather than show a warning with no label:
+    // alerts are already additive/automatic, safe to drop under space
+    // pressure, unlike a metric you chose to show.
+    //
+    // visibility, not display: display:none pulls the alert out of layout,
+    // which shifts ctl.offsetLeft left, which shrinks neededWidthCss() (it's
+    // derived from ctl's position) - so hiding it can make the very check
+    // that decided to hide it flip back to "fits now" one tick later. Found
+    // live: the alert flickering on/off once a second, caught mid-"on" still
+    // half-covered. visibility:hidden keeps the layout box (and so ctl's
+    // position, and neededWidthCss()'s result) exactly as if it were shown,
+    // while rendering nothing - the decision no longer depends on its own
+    // last answer.
+    alertsEl.style.visibility = (neededWidthCss() > window.innerWidth + 1) ? "hidden" : "";
   }
 }
 

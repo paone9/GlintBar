@@ -755,6 +755,19 @@ class MONITORINFO(ctypes.Structure):
                 ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
 
 
+# A dedicated WinDLL instance, not the process-wide ctypes.windll.user32 singleton.
+# _win32_setup() below locks down argtypes (e.g. SetWindowPos's cx/cy as plain
+# c_int) so 64-bit handles don't get silently truncated. But ctypes.windll.user32
+# is one shared object cached for the whole process - pywebview's own winforms.py
+# calls that exact same shared object's SetWindowPos too, passing None for cx/cy
+# (it relies on SWP_NOSIZE to ignore them). Declaring argtypes on the shared
+# singleton made that None fail with "ArgumentError: argument 5: TypeError: wrong
+# type" on every easy_drag mouse-move, silently breaking pywebview's own window
+# dragging. A private handle keeps our stricter prototypes from leaking into
+# other libraries sharing the process.
+USER32 = ctypes.WinDLL("user32", use_last_error=True)
+
+
 def _win32_setup(user32):
     user32.FindWindowW.restype = wt.HWND
     user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
@@ -908,7 +921,7 @@ def _idle_seconds():
     """Seconds since the last keyboard or mouse input (how long you've been away)."""
     lii = LASTINPUTINFO()
     lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii))
+    USER32.GetLastInputInfo(ctypes.byref(lii))
     return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) / 1000.0
 
 
@@ -981,16 +994,94 @@ WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80, 0x08000000
 SW_HIDE, SW_SHOW, SW_SHOWNA = 0, 5, 8
 
 
-def _place_topmost(u, hwnd, x, y, w, h, show, ex_add=0):
-    """Move a window, pin it to the topmost band, and show it. Optionally OR in
-    extra ex-styles first (tool-window / no-activate). Shared by the bar, the
-    hover popup, and the away report so the placement rule lives in one place."""
-    if ex_add:
-        cur = u.GetWindowLongW(hwnd, -20)          # GWL_EXSTYLE
-        u.SetWindowLongW(hwnd, -20, cur | ex_add)
-    u.MoveWindow(hwnd, x, y, w, h, True)
-    u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
-    u.ShowWindow(hwnd, show)
+_UI_INVOKE_LOCK = threading.Lock()
+
+
+def _invoke_on_ui_thread(uid, fn):
+    """Run fn() on the WinForms UI thread that actually owns this webview
+    window, via Control.Invoke() - the same marshaling pywebview's own show(),
+    hide(), maximize() and close() use internally. A raw cross-thread
+    MoveWindow/SetWindowPos on this class of window crashed the whole process
+    under stress (c226a8f); pywebview's own resize()/move() turned out to skip
+    this too, which is fine for them since JS-bridge calls already run on that
+    thread, but not for anything called from one of this app's own background
+    threads. This is the one safe path, meant to be used everywhere a
+    background thread touches a webview window's position, size, or
+    visibility - not just the call site that happened to get stress-tested
+    into failing first.
+
+    Skips (does nothing) rather than falling back to an unmarshalled call if
+    the view can't be found - a guess here is exactly the risk this exists to
+    remove. uid is a webview.Window's own `.uid`, not a raw hwnd.
+    """
+    try:
+        import webview.platforms.winforms as _wf
+        from System import Action
+        view = _wf.BrowserView.instances.get(uid)
+        if view is None:
+            return
+        if view.InvokeRequired:
+            # Action, not Func[T]: fn takes no args and returns nothing, and
+            # Func[T] needs pythonnet to coerce that None return into T, which
+            # proved flaky under real repeated calls (intermittent
+            # "TypeError: value cannot be converted to Type") even though it
+            # looked fine in isolated one-off testing - silently swallowed by
+            # this function's own except-and-drop, so the marshaled call
+            # simply never ran on those occasions. Action has no return value
+            # to coerce, so there's nothing left to fail.
+            #
+            # BeginInvoke, not Invoke: Invoke() blocks the calling thread until
+            # the UI thread runs fn(). When the caller is the repaint hook's own
+            # WinEventHook thread, that block leaves its GetMessage loop not
+            # pumping - and Windows silently throttles/drops further WinEvents
+            # to a hook thread that isn't processing its queue promptly. Proven
+            # live: with a blocking Invoke() in the loop, only the very first
+            # real right-click of a session ever produced a nudge - every
+            # later one fired the exact same OS event but the hook thread had
+            # gone deaf to it. Switching to the fire-and-forget BeginInvoke
+            # fixed it - confirmed via an isolated repro with real repeated
+            # clicks, no debounce or nudge logic involved, just this one
+            # change. Nothing here needs to wait for the UI thread to finish.
+            #
+            # Still not enough on its own: _watcher's own once-a-second call
+            # into this same function, running concurrently on its own thread,
+            # kept the repaint hook's WinEventHook thread going deaf after the
+            # first click even with BeginInvoke - proven by disabling _watcher
+            # entirely and watching the hook fire reliably on every click
+            # again. Concurrent cross-thread BeginInvoke() calls into the same
+            # WinForms control from more than one Python thread appear to
+            # disrupt WinEvent delivery on whichever thread loses the race,
+            # not just block it. This lock serializes every caller (the
+            # repaint hook, _watcher, JS-bridge calls, all of them) through a
+            # single moment of actually posting to the UI thread, without
+            # blocking on the posted work itself - _watcher keeps its own
+            # thread, the hook keeps pumping its own message loop, they just
+            # never call into the control at the exact same instant.
+            with _UI_INVOKE_LOCK:
+                view.BeginInvoke(Action(fn))
+        else:
+            fn()
+    except Exception:
+        pass
+
+
+def _place_topmost(u, hwnd, uid, x, y, w, h, show, ex_add=0):
+    """Move a window, pin it to the topmost band, and show it, on the thread
+    that actually owns it. Optionally OR in extra ex-styles first (tool-window
+    / no-activate). Shared by the bar, the hover popup, and the away report so
+    the placement rule lives in one place."""
+    def _do():
+        if ex_add:
+            cur = u.GetWindowLongW(hwnd, -20)          # GWL_EXSTYLE
+            u.SetWindowLongW(hwnd, -20, cur | ex_add)
+        u.MoveWindow(hwnd, x, y, w, h, True)
+        u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
+        u.ShowWindow(hwnd, show)
+    _invoke_on_ui_thread(uid, _do)
+
+
+UNMEASURED_GAP_MARGIN_PX = 88   # ~2 taskbar buttons (taskbargap estimates ~44px/button)
+BAR_EDGE_MARGIN_PX = 4   # logical px of breathing room from the gap's own edges
 
 
 def _effective_align(configured_align, measured):
@@ -1021,9 +1112,30 @@ def _place(css_width):
         return True
     u, scale = st["user32"], st["scale"]
     gap_l, gap_r, top, h = st["gap_l"], st["gap_r"], st["top"], st["height"]
-    avail = gap_r - gap_l - 24
+    # A flat, unscaled "12" here used to mean 12 physical px regardless of DPI -
+    # a fifth of a millimetre of margin on a 2.5x-scaled display, effectively
+    # touching, while looking comparatively wide on a lower-scale one. Scaling
+    # it like every other physical-pixel quantity in this function keeps the
+    # margin visually consistent across displays instead of shrinking away on
+    # the ones that need it least.
+    margin = int(round(BAR_EDGE_MARGIN_PX * scale))
+    avail = gap_r - gap_l - 2 * margin
+    if not st.get("measured", False):
+        # taskbargap (0.1.1+) already downgrades to measured=False when its own
+        # corroboration against a real window count doesn't add up - but
+        # honest uncertainty isn't the same as safe. The estimate it falls
+        # back to can still land short of the real button edge on a taskbar
+        # busy enough: found live, a desktop with 14+ pinned/running icons
+        # left it short by roughly two button-widths, still overlapping real
+        # icons despite the honest measured=False. _effective_align already
+        # forces right-alignment whenever unmeasured, so this narrows what the
+        # bar is willing to claim rather than where it claims from - less
+        # presumed space makes for a narrower bar (or a yield, on a taskbar
+        # crowded enough), whose right-aligned left edge sits further from an
+        # edge that's already known to be a guess.
+        avail -= int(round(UNMEASURED_GAP_MARGIN_PX * scale))
     if avail < 160:                  # not enough room; get out of the way of the buttons
-        u.ShowWindow(st["hwnd"], SW_HIDE)
+        _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], SW_HIDE))
         st["yielded"] = True
         return True
     st["yielded"] = False
@@ -1031,19 +1143,19 @@ def _place(css_width):
     w = max(w, 160)                  # avail >= 160 here, so w <= avail: never overlaps the buttons
     align = _effective_align(CONFIG.get("align", "right"), st.get("measured", False))
     if align == "left":
-        x1 = gap_l + 12
+        x1 = gap_l + margin
     elif align == "center":
         x1 = gap_l + ((gap_r - gap_l) - w) // 2
     else:
-        x1 = gap_r - 12 - w
-    _place_topmost(u, st["hwnd"], x1, top, w, h, SW_SHOW)   # absolute screen px
+        x1 = gap_r - margin - w
+    _place_topmost(u, st["hwnd"], st.get("bar_uid"), x1, top, w, h, SW_SHOW)   # absolute screen px
     st["x1"], st["w"] = x1, w
     if css_width:
         st["last_css"] = css_width
     return True
 
 
-def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False):
+def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False, bar_uid=None):
     """Float our window over the empty taskbar gap as a topmost, input-owning bar."""
     hwnd = 0
     for _ in range(60):
@@ -1055,15 +1167,19 @@ def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False):
         return
     # tool window: no taskbar button, no Alt-Tab entry, always topmost
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW, WS_EX_TOPMOST = -20, 0x80, 0x40000, 0x08
-    ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    ex = (ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_APPWINDOW
-    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-    user32.ShowWindow(hwnd, 0)     # hide/show so Windows drops the taskbar/Alt-Tab entry
+
+    def _set_style():
+        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ex = (ex | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_APPWINDOW
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+        user32.ShowWindow(hwnd, 0)     # hide/show so Windows drops the taskbar/Alt-Tab entry
+    _invoke_on_ui_thread(bar_uid, _set_style)
     # scale is already the taskbar's own monitor DPI (taskbargap.find_gap() reads it
     # via GetDpiForWindow on the tray), so unlike GetDpiForSystem() there is no
     # primary-vs-actual-monitor mismatch left to correct after the first placement.
     EMBED_STATE.update(hwnd=hwnd, user32=user32, gap_l=gap_l, gap_r=gap_r,
-                       top=top, height=height, scale=scale, measured=measured)
+                       top=top, height=height, scale=scale, measured=measured,
+                       bar_uid=bar_uid)
     _place(None)
 
 
@@ -1128,7 +1244,7 @@ def _watcher():
                     # say "already handled" and leave it stranded over the fullscreen
                     # app.
                     if u.IsWindowVisible(st["hwnd"]):
-                        u.ShowWindow(st["hwnd"], 0)   # SW_HIDE
+                        _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], 0))   # SW_HIDE
                         _hide_detail()
                     st["hidden_fs"] = True
                 continue
@@ -1141,10 +1257,11 @@ def _watcher():
             # a beat late is mild while hiding a beat late is the jarring case.
             if st.get("hidden_fs") and should_show:
                 st["hidden_fs"] = False
-                u.ShowWindow(st["hwnd"], 5)       # SW_SHOW
+                _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], 5))   # SW_SHOW
                 _place(st.get("last_css"))        # re-fit and re-assert topmost
             # normal upkeep: re-assert topmost and re-fit if the taskbar gap moved
-            u.SetWindowPos(st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
+            _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.SetWindowPos(
+                st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT))
             gap = taskbargap.find_gap()
             if gap is None:
                 continue
@@ -1214,16 +1331,65 @@ def _repaint_on_foreground_change(user32, bar_uid):
     safer: they call the identical raw, unmarshalled SetWindowPos - the only
     methods in that class that do, everything else (show, hide, maximize,
     close) properly routes through WinForms' own Control.Invoke(). This does
-    the same: looks up the raw WinForms view pywebview already holds and
-    invokes the resize on its actual UI thread, rather than reaching across
-    threads directly. Re-verified against the same stress test afterward.
+    the same, via the shared _invoke_on_ui_thread() helper: looks up the raw
+    WinForms view pywebview already holds and invokes the resize on its actual
+    UI thread, rather than reaching across threads directly. Re-verified
+    against the same stress test afterward.
+
+    Getting the nudge to actually fire on every right-click, not just the
+    first one of a session, took two more fixes inside _invoke_on_ui_thread
+    itself: an earlier version wrapped fn in Func[Type], which intermittently
+    threw "TypeError: value cannot be converted to Type" on real repeated
+    calls (silently swallowed, so the nudge frequently never ran at all
+    despite the stress test showing no crash) - fixed by using Action instead,
+    which has no return value to coerce. That still wasn't enough: Invoke()
+    blocks the calling thread until the UI thread runs fn(), and when the
+    caller is this hook's own WinEventHook thread, that block leaves its
+    GetMessage loop not pumping - Windows silently throttles/drops further
+    WinEvents to a hook thread that isn't processing its queue promptly.
+    Proven live with an isolated repro (real repeated right-clicks, no other
+    GlintBar code involved): with a blocking Invoke(), only the very first
+    click of a session ever produced a nudge - every later one fired the
+    identical OS event but the hook thread had gone deaf to it. Fixed by
+    using the fire-and-forget BeginInvoke() instead, since nothing here needs
+    to wait for the UI thread to finish. Even that wasn't quite enough on its
+    own: _watcher's own once-a-second call into _invoke_on_ui_thread, running
+    concurrently on its own thread, kept the hook thread going deaf after the
+    first click - confirmed by disabling _watcher entirely and watching the
+    hook fire reliably again. Concurrent cross-thread BeginInvoke() calls into
+    the same WinForms control from more than one Python thread appear to
+    disrupt WinEvent delivery on whichever thread loses the race. Fixed with
+    _UI_INVOKE_LOCK, serializing the moment of posting to the UI thread across
+    every caller without blocking on the posted work itself. Verified with a
+    real DWM-composited capture (dxcam) across 36 real right-clicks post-fix:
+    zero detected flicker.
     """
-    last_nudge = [0.0]
     try:
-        import webview.platforms.winforms as _wf
-        from System import Func, Type
+        import webview.platforms.winforms  # noqa: F401
     except Exception:
         return   # can't safely marshal onto the UI thread; don't run unmarshalled
+
+    last_nudge = [0.0]
+
+    pending_retries = []
+
+    def _do_nudge():
+        try:
+            bar = EMBED_STATE.get("hwnd")
+            if not bar:
+                return
+            r = wt.RECT()
+            user32.GetWindowRect(bar, ctypes.byref(r))
+            w, h = r.right - r.left, r.bottom - r.top
+            # RedrawWindow/WM_PAINT is a no-op for WebView2's actual content:
+            # it renders through its own DirectComposition surface, not the
+            # GDI paint cycle. A real (if 1px) geometry change forces
+            # DWM/WebView2 to fully reallocate and recomposite that surface,
+            # which a topmost reassert alone does not.
+            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h + 1, _NUDGE_FLAGS)
+            user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h, _NUDGE_FLAGS)
+        except Exception:
+            pass
 
     def _cb(_hook, event, _hwnd, idObject, _child, _thread, _ts):
         if event == EVENT_OBJECT_SHOW and idObject != OBJID_WINDOW:
@@ -1234,40 +1400,34 @@ def _repaint_on_foreground_change(user32, bar_uid):
             return
         now = time.monotonic()
         # A single right-click (or toast) can fire several of these events in
-        # quick succession (the menu's own intermediate windows). Nudging on each
-        # one measured *worse* than nudging once: overlapping resize operations
-        # can cascade into a longer visible glitch than the one being fixed.
-        # One nudge per burst is enough - the debounce is deliberately short so a
-        # second, genuinely separate trigger straight after isn't swallowed.
-        if now - last_nudge[0] < 0.2:
+        # quick succession (the menu's own intermediate windows), and this
+        # exists so a burst doesn't produce overlapping/cascading nudges.
+        if now - last_nudge[0] < 0.05:
             return
         last_nudge[0] = now
 
-        def _do_nudge():
-            try:
-                r = wt.RECT()
-                user32.GetWindowRect(bar, ctypes.byref(r))
-                w, h = r.right - r.left, r.bottom - r.top
-                # RedrawWindow/WM_PAINT is a no-op for WebView2's actual content:
-                # it renders through its own DirectComposition surface, not the
-                # GDI paint cycle. A real (if 1px) geometry change forces
-                # DWM/WebView2 to fully reallocate and recomposite that surface,
-                # which a topmost reassert alone does not.
-                user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h + 1, _NUDGE_FLAGS)
-                user32.SetWindowPos(bar, HWND_TOPMOST, r.left, r.top, w, h, _NUDGE_FLAGS)
-            except Exception:
-                pass
+        for t in pending_retries:
+            t.cancel()
+        pending_retries.clear()
 
-        try:
-            view = _wf.BrowserView.instances.get(bar_uid)
-            if view is None:
-                return   # can't confirm we'd be marshalling correctly; skip rather than guess
-            if view.InvokeRequired:
-                view.Invoke(Func[Type](_do_nudge))
-            else:
-                _do_nudge()
-        except Exception:
-            pass
+        _invoke_on_ui_thread(bar_uid, _do_nudge)
+        # A taskbar icon's jump list (thumbnails, live previews) renders
+        # progressively over a variable window, not in one shot like the
+        # plain right-click menu - measured via real repeated clicks with
+        # DWM-composited frame capture: a single nudge fired for its first
+        # event sometimes recovers in one frame and sometimes leaves the bar
+        # visibly glitched for several hundred ms, run to run, on the exact
+        # same build - the settle time itself varies (system/GPU load), not
+        # just whether the fix runs. These follow-ups catch the slow-settling
+        # case without the earlier "nudge on every event" failure mode: that
+        # cascaded because nudges fired as fast as raw events arrived, not
+        # spaced far enough apart to each finish before the next started.
+        # These fire on a fixed, deliberately-spaced schedule instead.
+        for delay in (0.15, 0.35, 0.6):
+            timer = threading.Timer(delay, lambda: _invoke_on_ui_thread(bar_uid, _do_nudge))
+            timer.daemon = True
+            pending_retries.append(timer)
+            timer.start()
 
     proc = _WINEVENTPROC(_cb)      # keep alive for the thread's lifetime
     hooks = [
@@ -1311,10 +1471,10 @@ def _toggle_hidden():
     hide = not st.get("user_hidden", False)
     st["user_hidden"] = hide
     if hide:
-        u.ShowWindow(st["hwnd"], SW_HIDE)
+        _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], SW_HIDE))
         _hide_detail()
     elif not st.get("hidden_fs"):     # a fullscreen app still owns the screen;
-        u.ShowWindow(st["hwnd"], SW_SHOW)   # the watcher brings it back on exit
+        _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], SW_SHOW))   # the watcher brings it back on exit
         _place(st.get("last_css"))
 
 
@@ -1323,7 +1483,7 @@ def _hotkey_loop():
     keys = _parse_hotkey(CONFIG.get("hotkey", "ctrl+alt+g"))
     if not keys:
         return
-    u = ctypes.windll.user32
+    u = USER32
     was_down = False
     while True:
         time.sleep(0.05)
@@ -1354,15 +1514,35 @@ class DetailApi:
 
 
 _DETAIL_HWND = None
+_DETAIL_UID = None   # set once at window creation in _run(); needed to marshal onto its UI thread
+
+
+def _create_detail_window():
+    """(Re)create the hover popup. Split out of _run() so a lost window (the
+    same .NET InvalidAsynchronousStateException _create_settings_window's
+    docstring covers - seen live under stress) can be rebuilt on demand
+    instead of leaving the hover popup permanently dead for the rest of the
+    session."""
+    global _DETAIL_UID, _DETAIL_HWND
+    win = webview.create_window(
+        TITLE_DETAIL, html=DETAIL_HTML, js_api=DetailApi(),
+        width=320, height=180, min_size=(80, 1), hidden=True,
+        frameless=True, on_top=True, resizable=False,
+        background_color="#12161c",
+    )
+    _DETAIL_UID = win.uid
+    _DETAIL_HWND = None   # stale from any prior window; _detail_hwnd() re-resolves it
+    return win
 
 
 def _detail_hwnd(user32):
     # The detail window is created once and lives for the whole process, so its
-    # handle never changes. Resolve it a single time and reuse — the watchdog
-    # asks for it every 80ms. A zero result isn't cached, so it retries until the
-    # window exists.
+    # handle never changes - normally. Resolve it once and reuse (the watchdog
+    # asks for it every 80ms), but IsWindow re-validates the cache: if the
+    # window was lost and rebuilt, the old handle is a stale, now-invalid HWND
+    # that would otherwise be cached forever and never looked up again.
     global _DETAIL_HWND
-    if not _DETAIL_HWND:
+    if not _DETAIL_HWND or not user32.IsWindow(_DETAIL_HWND):
         _DETAIL_HWND = user32.FindWindowW(None, TITLE_DETAIL)
     return _DETAIL_HWND
 
@@ -1375,13 +1555,17 @@ def _show_detail(metric_id, chip_center_css):
     u, scale = st["user32"], st["scale"]
     hwnd = _detail_hwnd(u)
     if not hwnd:
-        return False
+        _create_detail_window()
+        time.sleep(0.05)
+        hwnd = _detail_hwnd(u)
+        if not hwnd:
+            return False
     W, H = int(320 * scale), int(180 * scale)
     cx = st.get("x1", st["gap_l"]) + int(chip_center_css * scale)
     x = max(6, min(cx - W // 2, st["gap_r"] - W))
     y = st["top"] - H - 8            # float just above the taskbar
     # tool window (no taskbar button) + no-activate so it never steals focus
-    _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+    _place_topmost(u, hwnd, _DETAIL_UID, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
     DETAIL["rect"] = (x, y, x + W, y + H)   # physical px, for the cursor watchdog
     return True
 
@@ -1393,7 +1577,7 @@ def _hide_detail():
     u = st["user32"]
     hwnd = _detail_hwnd(u)
     if hwnd:
-        u.ShowWindow(hwnd, 0)        # SW_HIDE
+        _invoke_on_ui_thread(_DETAIL_UID, lambda: u.ShowWindow(hwnd, 0))        # SW_HIDE
     DETAIL["metric"] = None
     DETAIL["rect"] = None
     return True
@@ -1430,7 +1614,7 @@ def _detail_watchdog():
     the window is still up) the next tick still sees a visible window and retries,
     so the popup can never be stranded on screen.
     """
-    u = ctypes.windll.user32
+    u = USER32
     pt = wt.POINT()
     outside = 0
     while True:
@@ -1458,6 +1642,7 @@ AWAY_POLL = int(os.environ.get("GLINTBAR_AWAY_POLL", "15"))   # seconds between 
 AWAY_WINDOW = min(AWAY_POLL, HISTORY_LEN)   # the collector only keeps this many seconds
 AWAY_RAM_RISE = 25           # points of RAM growth that, left high, look like a leak
 AWAY_RAM_HIGH = 80           # ...and only if it ended up above this
+AWAY_REPORT_AUTO_DISMISS_S = 20   # a report you don't act on shouldn't sit topmost forever
 AWAY = {"report": None}
 
 
@@ -1480,6 +1665,24 @@ def _recent(hist, key):
     that (GLINTBAR_AWAY_POLL is a user knob) only the most recent HISTORY_LEN
     seconds of each interval survive to be read — hence AWAY_WINDOW."""
     return [v for v in (hist.get(key) or [])[-AWAY_WINDOW:] if v is not None]
+
+
+_AWAY_UID = None   # set once at window creation in _run(); needed to marshal onto its UI thread
+
+
+def _create_away_window():
+    """(Re)create the away-report popup. Split out of _run() for the same
+    reason as _create_detail_window(): a lost window should self-heal on the
+    next report instead of silently never showing one again."""
+    global _AWAY_UID
+    win = webview.create_window(
+        TITLE_AWAY, html=AWAY_HTML, js_api=AwayApi(),
+        width=380, height=240, min_size=(80, 1), hidden=True,
+        frameless=True, on_top=True, resizable=False,
+        background_color="#12161c",
+    )
+    _AWAY_UID = win.uid
+    return win
 
 
 def _away_hwnd(user32):
@@ -1526,10 +1729,14 @@ def _log_away(rep):
 
 def _show_away():
     st = EMBED_STATE
-    u = st.get("user32") or ctypes.windll.user32
+    u = st.get("user32") or USER32
     hwnd = _away_hwnd(u)
     if not hwnd:
-        return
+        _create_away_window()
+        time.sleep(0.05)
+        hwnd = _away_hwnd(u)
+        if not hwnd:
+            return
     scale = st.get("scale", 1.0)
     # Deliberately a constant size. Sizing to content made the popup jump around
     # between reports; a long list scrolls inside instead.
@@ -1546,7 +1753,18 @@ def _show_away():
         y = m.top + int(70 * scale)
     else:
         x, y = (u.GetSystemMetrics(0) - W) // 2, int(70 * scale)
-    _place_topmost(u, hwnd, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
+    _place_topmost(u, hwnd, _AWAY_UID, x, y, W, H, SW_SHOWNA, WS_EX_TOOLWINDOW)
+    # A report you don't act on shouldn't sit topmost over your work forever -
+    # auto-dismiss it the same way "Got it"/"Open log" already do, just on a
+    # timer instead of a click. Runs on its own thread (not a JS-bridge
+    # callback like those two), so this goes through the safe marshaling
+    # helper rather than call ShowWindow directly across threads. Harmless if
+    # you've already dismissed it manually by the time this fires - hiding an
+    # already-hidden window is a no-op.
+    timer = threading.Timer(AWAY_REPORT_AUTO_DISMISS_S,
+                             lambda: _invoke_on_ui_thread(_AWAY_UID, lambda: u.ShowWindow(hwnd, 0)))
+    timer.daemon = True
+    timer.start()
 
 
 def _finalize_away(stats):
@@ -1610,7 +1828,7 @@ def _finalize_away(stats):
 
 def _is_locked():
     """True if the workstation is locked (secure desktop can't be opened)."""
-    u = ctypes.windll.user32
+    u = USER32
     u.OpenInputDesktop.restype = wt.HANDLE
     h = u.OpenInputDesktop(0, False, 0x0100)   # DESKTOP_SWITCHDESKTOP
     if h:
@@ -1715,10 +1933,15 @@ class AwayApi:
         return AWAY.get("report")
 
     def dismiss(self):
-        u = ctypes.windll.user32
+        # Every js_api method runs on a fresh Thread (pywebview's
+        # js_bridge_call, "to prevent blocking the UI thread") - not the UI
+        # thread itself, despite this being the one call site that used to
+        # assume otherwise. An unmarshalled cross-thread window call is
+        # exactly what c226a8f proved crashes the whole process under load.
+        u = USER32
         hwnd = _away_hwnd(u)
         if hwnd:
-            u.ShowWindow(hwnd, 0)
+            _invoke_on_ui_thread(_AWAY_UID, lambda: u.ShowWindow(hwnd, 0))
         return True
 
     def open_logs(self):
@@ -1743,18 +1966,34 @@ def _settings_x(u, W):
 SETTINGS_OFFSCREEN = -32000
 
 
+_SETTINGS_UID = None   # set once at startup, when _run() creates the panel
+# The panel's own JS calls fit() unconditionally whenever loadConfig() runs -
+# on its very first page load (now at startup, parked off screen) and every
+# time _open_settings() asks it to refresh - with no notion of whether it's
+# actually supposed to be on screen right now. Tracked here instead, so
+# _fit_settings can tell "reposition on screen" apart from "just re-rendered
+# while still meant to be parked".
+_SETTINGS_OPEN = False
+
+
 def _place_settings(u, hwnd, W, H):
     """Float the settings panel just above the bar, growing upward."""
     screen_h = u.GetSystemMetrics(1)                 # SM_CYSCREEN
     top = EMBED_STATE.get("top", screen_h)
-    u.MoveWindow(hwnd, _settings_x(u, W), max(top - H - 8, 8), W, H, True)
+    x, y = _settings_x(u, W), max(top - H - 8, 8)
+    _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.MoveWindow(hwnd, x, y, W, H, True))
 
 
 def _fit_settings(css_h):
     """Size the settings window to its content and bring it on screen, capped so
     tall content stays visible (never full-screen)."""
+    if not _SETTINGS_OPEN:
+        # The page's own JS calls this unconditionally whenever it re-renders,
+        # including its first load at startup (parked off screen) and any
+        # refresh triggered while closed - none of which mean "show me now".
+        return False
     st = EMBED_STATE
-    u = st.get("user32") or ctypes.windll.user32
+    u = st.get("user32") or USER32
     hwnd = u.FindWindowW(None, TITLE_SETTINGS)
     if not hwnd:
         return False
@@ -1778,7 +2017,9 @@ def _settings_failsafe():
     exactly the parked window it was written to rescue."""
     try:
         time.sleep(1.5)
-        u = EMBED_STATE.get("user32") or ctypes.windll.user32
+        if not _SETTINGS_OPEN:
+            return   # closed again already; don't force it back on screen
+        u = EMBED_STATE.get("user32") or USER32
         hwnd = u.FindWindowW(None, TITLE_SETTINGS)
         if not hwnd:
             return
@@ -1790,31 +2031,138 @@ def _settings_failsafe():
 
 
 def _close_settings():
-    """Shut the settings panel if it's open. True if there was one to shut."""
-    found = False
-    for w in list(webview.windows):
-        if w.title == TITLE_SETTINGS:
-            found = True
-            try:
-                w.destroy()
-            except Exception:
-                pass
-    return found
+    """Park the settings panel off screen if it's currently shown. True if it was.
+
+    Parks rather than destroys: the panel is created once at startup (like the
+    hover popup and away report) and reused, not recreated per open. A window
+    created fresh well after webview.start() - the old behavior here - is the
+    one thing that reliably failed to ever paint any content on at least one
+    real machine (WebView2 loaded fine for the windows created at startup;
+    only this dynamically-created one came up as a permanently blank
+    background_color rectangle). Reusing the same startup-created window for
+    every open/close sidesteps whatever that was, without needing to know its
+    exact cause on a machine this can't be reproduced on.
+
+    Whether it's "open" is tracked here, not read back from the window's own
+    position: the page's own JS re-fits (and so re-shows) itself any time
+    loadConfig() runs, including its first load at startup, asynchronously and
+    on its own schedule - polling the window's rect at the moment of a click
+    raced against that and could see either state regardless of what was
+    actually intended."""
+    global _SETTINGS_OPEN
+    if not _SETTINGS_OPEN:
+        return False
+    _SETTINGS_OPEN = False
+    u = USER32
+    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    if not hwnd:
+        return True
+    r = wt.RECT()
+    if u.GetWindowRect(hwnd, ctypes.byref(r)):
+        w, h = r.right - r.left, r.bottom - r.top
+    else:
+        # GetWindowRect failing on a hwnd FindWindowW just found is rare, but
+        # skipping the park entirely here would leave a window this function
+        # already reports as closed still sitting on screen. Fall back to the
+        # size it's created at rather than trust nothing at all.
+        scale = EMBED_STATE.get("scale", 1.0)
+        w, h = int(360 * scale), int(480 * scale)
+    _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.MoveWindow(hwnd, SETTINGS_OFFSCREEN, 0, w, h, True))
+    return True
+
+
+def _create_settings_window():
+    """Create the settings panel, parked off screen (see _close_settings for
+    why parked rather than destroyed between uses). Called once at startup,
+    and again from _open_settings() as a fallback if the persistent window is
+    ever lost - its WinForms control disposed by some other failure, seen live
+    under heavy synthetic stress (window churn plus rapid toggling triggered a
+    .NET InvalidAsynchronousStateException). Recreating here means a lost
+    window self-heals on the next gear click instead of leaving it permanently
+    doing nothing until the app is restarted - the persistent-reuse design
+    fixed content that never painted on a real machine, but on its own gave
+    up its one fallback for "the window is just gone" that the old
+    create-fresh-every-time version had for free."""
+    global _SETTINGS_UID
+    win = webview.create_window(
+        TITLE_SETTINGS, html=SETTINGS_HTML, js_api=SettingsApi(),
+        width=360, height=480, x=SETTINGS_OFFSCREEN, y=0, resizable=True, on_top=True,
+        background_color="#12161c",
+    )
+    _SETTINGS_UID = win.uid
+
+    def _drop_taskbar_entry():
+        # Parked off screen but still a genuinely visible top-level window (not
+        # hidden=True - see the docstring above for why), so without this it
+        # carries an ordinary taskbar button for its entire off-screen-parked
+        # life, not just while actually open - a "ghost" icon with nothing
+        # visible behind it, found live. Mirrors the same tool-window
+        # treatment _overlay() already applies to the bar itself. Safe to
+        # briefly hide here specifically because it happens before this
+        # window has ever been opened for real: at the STARTUP call site,
+        # _SETTINGS_OPEN is still False, so the page's own first fitWindow()
+        # measurement is a no-op regardless (see _fit_settings). This is also
+        # called again as a self-heal fallback if the window was lost and
+        # rebuilt mid-session, where that assumption doesn't hold - _do()
+        # re-checks the window's actual position for that case.
+        u = USER32
+        hwnd = 0
+        for _ in range(30):
+            hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+            if hwnd:
+                break
+            time.sleep(0.1)
+        if not hwnd:
+            return
+
+        def _do():
+            # A self-heal recreate can race a genuine, already-visible open (the
+            # panel the user asked for lands on screen before this fires). Hiding
+            # and reshowing it then would flicker a panel someone is actively
+            # looking at, just to fix a cosmetic ghost taskbar entry - skip it;
+            # the ghost icon outlives this one abnormal recreate, nothing more.
+            r = wt.RECT()
+            if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left > SETTINGS_OFFSCREEN // 2:
+                return
+            GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x80, 0x40000
+            ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ex = (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+            u.ShowWindow(hwnd, 0)    # SW_HIDE
+            u.ShowWindow(hwnd, 8)    # SW_SHOWNA: re-show without activating or stealing focus
+        _invoke_on_ui_thread(_SETTINGS_UID, _do)
+
+    threading.Thread(target=_drop_taskbar_entry, daemon=True).start()
+    return win
 
 
 def _open_settings():
     # The gear toggles. Clicking it while the panel is up closes it, rather than
     # looking broken by doing nothing.
+    global _SETTINGS_OPEN
     if _close_settings():
         return
-    W, H = 360, 480                       # logical (DIP); JS calls fit() to trim to content
-    # Off screen, not hidden: a hidden webview may not lay out, and then the
-    # scrollHeight the fit relies on comes back wrong. _fit_settings brings it in.
-    webview.create_window(
-        TITLE_SETTINGS, html=SETTINGS_HTML, js_api=SettingsApi(),
-        width=W, height=H, x=SETTINGS_OFFSCREEN, y=0, resizable=True, on_top=True,
-        background_color="#12161c",
-    )
+    u = USER32
+    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    if not hwnd:
+        _create_settings_window()
+        # Give the fresh window a beat to finish its own initial page load
+        # (which already runs loadConfig() -> fitWindow() on its own) before
+        # the failsafe checks whether it made it on screen.
+        time.sleep(0.05)
+    _SETTINGS_OPEN = True
+    # Refresh content before showing: this window is reused across opens, not
+    # recreated, so whatever it displayed last time (an old CSV logging state,
+    # a config saved from a previous open) would otherwise still be showing.
+    # fitWindow() -> Api.fit() -> _fit_settings() brings it back on screen at
+    # the right size, the same path a fresh page load already used.
+    for w in webview.windows:
+        if w.title == TITLE_SETTINGS:
+            try:
+                w.evaluate_js("loadConfig()")
+            except Exception:
+                pass
+            break
     threading.Thread(target=_settings_failsafe, daemon=True).start()
 
 
@@ -1881,7 +2229,7 @@ def _diag():
     except Exception:
         pass
     print("  module init (imports + provider detection): %.2fs" % (time.monotonic() - _T0))
-    u = ctypes.windll.user32
+    u = USER32
     taskbargap.enable_dpi_awareness()
     _win32_setup(u)
     try:
@@ -1944,7 +2292,7 @@ def _alert(msg, error=False):
         k.GetConsoleWindow.restype = wt.HWND    # _win32_setup hasn't run yet
         if not k.GetConsoleWindow():
             # MB_ICONERROR / MB_ICONINFORMATION
-            ctypes.windll.user32.MessageBoxW(0, msg, TITLE_BAR, 0x10 if error else 0x40)
+            USER32.MessageBoxW(0, msg, TITLE_BAR, 0x10 if error else 0x40)
     except Exception:
         pass
 
@@ -1977,7 +2325,7 @@ def _run():
                "Install the free Evergreen runtime, then start GlintBar again:\n"
                "https://developer.microsoft.com/microsoft-edge/webview2/", error=True)
         return
-    user32 = ctypes.windll.user32
+    user32 = USER32
     # Per-monitor-v2 awareness so coordinates and scale stay correct across monitors
     # with different scaling (matches how WebView2 renders). Fall back on old Windows.
     taskbargap.enable_dpi_awareness()
@@ -2013,24 +2361,15 @@ def _run():
         background_color="#0b0f14",
     )
     # hover-to-expand popup, created hidden; shown above the bar on chip hover
-    webview.create_window(
-        TITLE_DETAIL, html=DETAIL_HTML, js_api=DetailApi(),
-        width=320, height=180, min_size=(80, 1), hidden=True,
-        frameless=True, on_top=True, resizable=False,
-        background_color="#12161c",
-    )
+    _create_detail_window()
     # "while you were away" report popup, created hidden; shown on your return
-    webview.create_window(
-        TITLE_AWAY, html=AWAY_HTML, js_api=AwayApi(),
-        width=380, height=240, min_size=(80, 1), hidden=True,
-        frameless=True, on_top=True, resizable=False,
-        background_color="#12161c",
-    )
+    _create_away_window()
+    _create_settings_window()
     if EMBED and embed_args is not None:
         # embed once the window actually exists (pywebview 'shown' event), so a
         # slow machine (AV-scanned cold start) can't lose a startup race
         bar.events.shown += lambda *a: threading.Thread(
-            target=_overlay, args=(user32, *embed_args), daemon=True).start()
+            target=_overlay, args=(user32, *embed_args), kwargs={"bar_uid": bar.uid}, daemon=True).start()
         threading.Thread(target=_watcher, daemon=True).start()
         threading.Thread(target=_detail_watchdog, daemon=True).start()
         threading.Thread(target=_hotkey_loop, daemon=True).start()

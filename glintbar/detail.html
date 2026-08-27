@@ -75,31 +75,43 @@ const ACTIVE_MS = 100, IDLE_MS = 1000;
 let timer = null;
 function schedule(ms){ clearTimeout(timer); timer = setTimeout(tick, ms); }
 async function tick(){
-  let d; try{ d=await window.pywebview.api.get(); }catch(e){ schedule(IDLE_MS); return; }
-  if(!d || !d.metric){ lastMetric=null; schedule(IDLE_MS); return; }
-  const m=META[d.metric]; if(!m){ schedule(IDLE_MS); return; }
-  if(d.metric !== lastMetric){   // new tile: wipe the previous frame before drawing this one
-    lastMetric = d.metric;
-    document.getElementById("stats").textContent = "";
-    const c0=document.getElementById("cv"); c0.getContext("2d").clearRect(0,0,c0.width,c0.height);
+  // schedule() always runs exactly once via finally, however this exits -
+  // early return, a rejected api.get(), or an unexpected exception partway
+  // through rendering. Without that guarantee, one bad tick permanently
+  // kills the chain (visibilitychange's direct tick() call on reopen is the
+  // only thing that would ever restart it - not a given for every path here).
+  let delay = IDLE_MS;
+  try{
+    const d = await window.pywebview.api.get();
+    if(!d || !d.metric){ lastMetric=null; return; }
+    const m=META[d.metric]; if(!m) return;
+    if(d.metric !== lastMetric){   // new tile: wipe the previous frame before drawing this one
+      lastMetric = d.metric;
+      document.getElementById("stats").textContent = "";
+      const c0=document.getElementById("cv"); c0.getContext("2d").clearRect(0,0,c0.width,c0.height);
+    }
+    const v=d.latest, c=cls(m,v);                     // colour and graph use raw °C
+    const F = (d.temp_unit==="F") && TEMP_IDS.has(d.metric);
+    const conv = x => (x==null ? x : (F ? x*9/5+32 : x));
+    const unit = F ? "°F" : m.unit;
+    document.getElementById("lbl").textContent = m.lbl;
+    const val=document.getElementById("val"); val.className="val "+c;
+    val.innerHTML = fmt(conv(v),d.metric)+` <span class="u">${unit}</span>`;
+    const s=d.stats||{};
+    let extra="";
+    if(d.metric==="gpu_mem_pct"&&d.extra&&d.extra.gpu_mem_used!=null)
+      extra=`  ·  ${Math.round(d.extra.gpu_mem_used)}/${Math.round(d.extra.gpu_mem_total)} MB`;
+    if(d.metric==="ram_pct"&&d.extra&&d.extra.ram_used_gb!=null)
+      extra=`  ·  ${d.extra.ram_used_gb.toFixed(1)}/${d.extra.ram_total_gb.toFixed(0)} GB`;
+    document.getElementById("stats").textContent =
+      (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  since launch`:"") + extra;
+    draw(document.getElementById("cv"), d.hist||[], m, color(c));
+    delay = ACTIVE_MS;
+  } catch(e){
+    // leave delay at IDLE_MS
+  } finally {
+    schedule(delay);
   }
-  const v=d.latest, c=cls(m,v);                     // colour and graph use raw °C
-  const F = (d.temp_unit==="F") && TEMP_IDS.has(d.metric);
-  const conv = x => (x==null ? x : (F ? x*9/5+32 : x));
-  const unit = F ? "°F" : m.unit;
-  document.getElementById("lbl").textContent = m.lbl;
-  const val=document.getElementById("val"); val.className="val "+c;
-  val.innerHTML = fmt(conv(v),d.metric)+` <span class="u">${unit}</span>`;
-  const s=d.stats||{};
-  let extra="";
-  if(d.metric==="gpu_mem_pct"&&d.extra&&d.extra.gpu_mem_used!=null)
-    extra=`  ·  ${Math.round(d.extra.gpu_mem_used)}/${Math.round(d.extra.gpu_mem_total)} MB`;
-  if(d.metric==="ram_pct"&&d.extra&&d.extra.ram_used_gb!=null)
-    extra=`  ·  ${d.extra.ram_used_gb.toFixed(1)}/${d.extra.ram_total_gb.toFixed(0)} GB`;
-  document.getElementById("stats").textContent =
-    (s.min!=null?`min ${fmt(conv(s.min),d.metric)}  ·  max ${fmt(conv(s.max),d.metric)}  ·  avg ${fmt(conv(s.avg),d.metric)}  ·  since launch`:"") + extra;
-  draw(document.getElementById("cv"), d.hist||[], m, color(c));
-  schedule(ACTIVE_MS);
 }
 window.addEventListener("pywebviewready", tick);
 // The native ShowWindow that re-opens this popup (SW_SHOWNA, so it never steals
