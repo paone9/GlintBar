@@ -156,7 +156,14 @@ Set `DOCK` at the top of `glintbar/monitor.py`:
   between your app buttons and the system tray. It's a normal top-level window
   that sits above the Windows 11 taskbar's input layer, so its hovers and clicks
   work and it uses no extra screen space. A small background thread keeps it
-  fitted to the gap and on top as apps open and close.
+  fitted to the gap and on top as apps open and close. On Windows 11 the gap is
+  measured from the buttons the taskbar actually draws (Start, Search, every
+  app, Widgets), read through the taskbar's own accessibility tree, so the bar
+  never sits on one of them. The bar is sized to the tiles you picked, and when
+  the gap is too short for all of them it takes what is free and the tiles
+  scroll sideways instead: move the mouse across them (or use the wheel) and
+  they follow, with a fade at whichever edge has more. The bar appears once, at
+  its final size, rather than at a placeholder width first.
 - `"bottom"` is a thin full-width strip just above the taskbar.
 - `"top"` is a thin full-width strip at the top of the screen.
 
@@ -171,12 +178,14 @@ want to restart it. Letting you pick a different monitor is on the
 When a video, game, or slideshow goes fullscreen on the same screen, the bar
 hides itself so it's not in the way, and it comes back when you exit fullscreen.
 
-If the taskbar fills up and the gap gets too small to fit the bar, it steps aside
-on its own rather than cover your app buttons, and returns when there's room. To
-hide or show it yourself at any time, press **Ctrl+Alt+G** (change the combo or
-disable it with `hotkey` in `config.json`). On Windows 11's default (centred)
-taskbar the gap can't always be measured, so the hotkey is the reliable way to
-reach buttons the bar is sitting over.
+If the taskbar fills up and the gap gets too small to fit even a minimal bar, it
+steps aside on its own rather than cover your app buttons, and returns when
+there's room. To hide or show it yourself at any time, press **Ctrl+Alt+G**
+(change the combo or disable it with `hotkey` in `config.json`). On Windows 10,
+or if the Windows 11 taskbar's accessibility tree can't be read, the app-button
+edge is a corroborated estimate rather than a measurement; the bar then keeps
+extra distance from it and anchors right, and the hotkey is there if it still
+ends up over something.
 
 ## Hover to expand
 

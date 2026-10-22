@@ -1097,10 +1097,60 @@ def _effective_align(configured_align, measured):
     return configured_align
 
 
+BAR_MIN_PX = 160   # physical px: below this the bar yields the gap rather than squeeze in
+
+
+def _bar_geometry(gap_l, gap_r, scale, measured, css_width, align):
+    """Where the bar goes, as `(x, width)` in physical px, or None to yield.
+
+    Pure and Win32-free so the one rule that decides whether the bar can ever
+    sit on a taskbar button is unit-tested: the width is clamped to the gap less
+    a margin at each end, so it never widens past the gap, and when even
+    `BAR_MIN_PX` doesn't fit the answer is to get out of the way. The page
+    handles a bar narrower than its content by scrolling, so a crowded taskbar
+    costs scrolling, never a covered icon.
+
+    `css_width` is what the page needs (CSS px); None means fill the gap.
+    `measured` False is taskbargap's honest guess (no UI Automation reading,
+    legacy windows not credible), and the bar then claims less of it.
+    """
+    # A flat, unscaled "12" here used to mean 12 physical px regardless of DPI -
+    # a fifth of a millimetre of margin on a 2.5x-scaled display, effectively
+    # touching, while looking comparatively wide on a lower-scale one. Scaling
+    # it like every other physical-pixel quantity keeps the margin visually
+    # consistent across displays instead of shrinking away on the ones that
+    # need it least.
+    margin = int(round(BAR_EDGE_MARGIN_PX * scale))
+    avail = gap_r - gap_l - 2 * margin
+    if not measured:
+        # taskbargap downgrades to measured=False when it has no UI Automation
+        # reading and its legacy corroboration doesn't add up - but honest
+        # uncertainty isn't the same as safe. The estimate it falls back to can
+        # still land short of the real button edge on a taskbar busy enough:
+        # found live, a desktop with 14+ pinned/running icons left it short by
+        # roughly two button-widths. _effective_align already forces
+        # right-alignment whenever unmeasured, so this narrows what the bar is
+        # willing to claim rather than where it claims from.
+        avail -= int(round(UNMEASURED_GAP_MARGIN_PX * scale))
+    if avail < BAR_MIN_PX:
+        return None
+    w = min(int(round(css_width * scale)) + 6, avail) if css_width else avail
+    w = max(w, BAR_MIN_PX)           # avail >= BAR_MIN_PX here, so w <= avail: never over a button
+    align = _effective_align(align, measured)
+    if align == "left":
+        x1 = gap_l + margin
+    elif align == "center":
+        x1 = gap_l + ((gap_r - gap_l) - w) // 2
+    else:
+        x1 = gap_r - margin - w
+    return x1, w
+
+
 def _place(css_width):
-    """Resize/anchor the floating bar to fit `css_width` within the taskbar gap.
-    If the gap is too narrow to fit the bar, it yields (hides) rather than cover
-    the taskbar buttons, and returns on its own once there's room again."""
+    """Resize/anchor the floating bar to fit `css_width` within the taskbar gap,
+    and show it. If the gap is too narrow to fit even a minimal bar, it yields
+    (hides) rather than cover the taskbar buttons, and returns on its own once
+    there's room again."""
     st = EMBED_STATE
     if not st.get("hwnd"):
         return False
@@ -1112,47 +1162,34 @@ def _place(css_width):
         return True
     u, scale = st["user32"], st["scale"]
     gap_l, gap_r, top, h = st["gap_l"], st["gap_r"], st["top"], st["height"]
-    # A flat, unscaled "12" here used to mean 12 physical px regardless of DPI -
-    # a fifth of a millimetre of margin on a 2.5x-scaled display, effectively
-    # touching, while looking comparatively wide on a lower-scale one. Scaling
-    # it like every other physical-pixel quantity in this function keeps the
-    # margin visually consistent across displays instead of shrinking away on
-    # the ones that need it least.
-    margin = int(round(BAR_EDGE_MARGIN_PX * scale))
-    avail = gap_r - gap_l - 2 * margin
-    if not st.get("measured", False):
-        # taskbargap (0.1.1+) already downgrades to measured=False when its own
-        # corroboration against a real window count doesn't add up - but
-        # honest uncertainty isn't the same as safe. The estimate it falls
-        # back to can still land short of the real button edge on a taskbar
-        # busy enough: found live, a desktop with 14+ pinned/running icons
-        # left it short by roughly two button-widths, still overlapping real
-        # icons despite the honest measured=False. _effective_align already
-        # forces right-alignment whenever unmeasured, so this narrows what the
-        # bar is willing to claim rather than where it claims from - less
-        # presumed space makes for a narrower bar (or a yield, on a taskbar
-        # crowded enough), whose right-aligned left edge sits further from an
-        # edge that's already known to be a guess.
-        avail -= int(round(UNMEASURED_GAP_MARGIN_PX * scale))
-    if avail < 160:                  # not enough room; get out of the way of the buttons
+    geo = _bar_geometry(gap_l, gap_r, scale, st.get("measured", False), css_width,
+                        CONFIG.get("align", "right"))
+    if css_width:
+        st["last_css"] = css_width
+    st["placed"] = True
+    if geo is None:                  # not enough room; get out of the way of the buttons
         _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], SW_HIDE))
         st["yielded"] = True
         return True
     st["yielded"] = False
-    w = min(int(round(css_width * scale)) + 6, avail) if css_width else avail
-    w = max(w, 160)                  # avail >= 160 here, so w <= avail: never overlaps the buttons
-    align = _effective_align(CONFIG.get("align", "right"), st.get("measured", False))
-    if align == "left":
-        x1 = gap_l + margin
-    elif align == "center":
-        x1 = gap_l + ((gap_r - gap_l) - w) // 2
-    else:
-        x1 = gap_r - margin - w
+    x1, w = geo
     _place_topmost(u, st["hwnd"], st.get("bar_uid"), x1, top, w, h, SW_SHOW)   # absolute screen px
     st["x1"], st["w"] = x1, w
-    if css_width:
-        st["last_css"] = css_width
     return True
+
+
+# If the page never asks for a size (a script error, a webview that didn't run
+# it), show the bar at the gap's full width rather than leave it hidden forever.
+BAR_SHOW_FAILSAFE_S = 2.5
+
+
+def _bar_show_failsafe():
+    try:
+        time.sleep(BAR_SHOW_FAILSAFE_S)
+        if EMBED_STATE.get("hwnd") and not EMBED_STATE.get("placed"):
+            _place(None)
+    except Exception:
+        pass
 
 
 def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False, bar_uid=None):
@@ -1177,10 +1214,21 @@ def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False, bar_uid=N
     # scale is already the taskbar's own monitor DPI (taskbargap.find_gap() reads it
     # via GetDpiForWindow on the tray), so unlike GetDpiForSystem() there is no
     # primary-vs-actual-monitor mismatch left to correct after the first placement.
+    # The gap was read before the window existed; WebView2's first paint can take a
+    # second or more on a cold start, so read it again now rather than place on a
+    # snapshot that an app opening meanwhile has already moved.
+    gap = taskbargap.find_gap()
+    if gap is not None:
+        gap_l, gap_r, top, height, scale, measured = (
+            gap.left, gap.right, gap.top, gap.height, gap.scale, gap.measured)
     EMBED_STATE.update(hwnd=hwnd, user32=user32, gap_l=gap_l, gap_r=gap_r,
                        top=top, height=height, scale=scale, measured=measured,
                        bar_uid=bar_uid)
-    _place(None)
+    # The bar was created hidden. It is first shown by _place() when the page
+    # reports its content width (Api.request_size), so it appears once, at the
+    # right size, instead of flashing at the gap's full width and then snapping
+    # to its content. The failsafe shows it anyway if that report never comes.
+    threading.Thread(target=_bar_show_failsafe, daemon=True).start()
 
 
 def _fs_debounce(condition, streak_since, now, hold_s=FS_HIDE_HOLD_S):
@@ -1275,7 +1323,11 @@ def _watcher():
                     or abs(gap.right - st["gap_r"]) > 8 or gap.top != st["top"]):
                 st["gap_l"], st["gap_r"], st["top"], st["height"], st["measured"] = (
                     gap.left, gap.right, gap.top, gap.height, gap.measured)
-                _place(st.get("last_css"))
+                # Before the first placement the bar is still hidden, waiting for
+                # the page's width report; it will place against the state just
+                # updated, so don't show it here at a width it hasn't asked for.
+                if st.get("placed"):
+                    _place(st.get("last_css"))
         except Exception:
             pass
 
@@ -1960,28 +2012,40 @@ def _settings_x(u, W):
     return max(x, 8)
 
 
-# The panel is born off screen so its fit-to-content pass isn't a visible stutter:
-# it would otherwise appear at a placeholder height and immediately jump to its
-# real one, moving as well as resizing (the y depends on the height).
-SETTINGS_OFFSCREEN = -32000
-
-
 _SETTINGS_UID = None   # set once at startup, when _run() creates the panel
-# The panel's own JS calls fit() unconditionally whenever loadConfig() runs -
-# on its very first page load (now at startup, parked off screen) and every
-# time _open_settings() asks it to refresh - with no notion of whether it's
-# actually supposed to be on screen right now. Tracked here instead, so
-# _fit_settings can tell "reposition on screen" apart from "just re-rendered
-# while still meant to be parked".
+# Whether the panel is meant to be on screen right now. The page's own JS calls
+# fit() whenever loadConfig() runs - on its first page load at startup (hidden)
+# and every time _open_settings() asks it to refresh - with no notion of whether
+# it is supposed to be visible. Tracked here instead, so _fit_settings can tell
+# "size and show" apart from "just re-rendered while still meant to be hidden".
 _SETTINGS_OPEN = False
 
 
 def _place_settings(u, hwnd, W, H):
-    """Float the settings panel just above the bar, growing upward."""
+    """Float the settings panel just above the bar, growing upward, topmost, and
+    show it. SW_SHOW rather than SW_SHOWNA: the user clicked for this one, so it
+    takes focus (the controls in it need the keyboard)."""
     screen_h = u.GetSystemMetrics(1)                 # SM_CYSCREEN
     top = EMBED_STATE.get("top", screen_h)
     x, y = _settings_x(u, W), max(top - H - 8, 8)
-    _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.MoveWindow(hwnd, x, y, W, H, True))
+
+    def _do():
+        # No taskbar button and no Alt-Tab entry, the same treatment _overlay()
+        # gives the bar. Done here, on the owning thread and before the show,
+        # rather than once at creation: the window is findable by title before
+        # pywebview has registered its WinForms view (measured: found at 0.98s,
+        # view still unregistered), so a creation-time invoke could be dropped
+        # on the floor, and the panel then carried a taskbar button for the
+        # session. Idempotent and cheap, so it simply runs on every show.
+        GWL_EXSTYLE, WS_EX_APPWINDOW = -20, 0x40000
+        ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        want = (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+        if want != ex:
+            u.SetWindowLongW(hwnd, GWL_EXSTYLE, want)
+        u.MoveWindow(hwnd, x, y, W, H, True)
+        u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT)
+        u.ShowWindow(hwnd, SW_SHOW)
+    _invoke_on_ui_thread(_SETTINGS_UID, _do)
 
 
 def _fit_settings(css_h):
@@ -1989,8 +2053,8 @@ def _fit_settings(css_h):
     tall content stays visible (never full-screen)."""
     if not _SETTINGS_OPEN:
         # The page's own JS calls this unconditionally whenever it re-renders,
-        # including its first load at startup (parked off screen) and any
-        # refresh triggered while closed - none of which mean "show me now".
+        # including its first load at startup (hidden) and any refresh triggered
+        # while closed - none of which mean "show me now".
         return False
     st = EMBED_STATE
     u = st.get("user32") or USER32
@@ -2009,31 +2073,34 @@ def _fit_settings(css_h):
     return True
 
 
+SETTINGS_FAILSAFE_S = 1.5
+
+
 def _settings_failsafe():
-    """If the fit never reports back — a script error, a webview that didn't run it
-    — bring the panel on screen at its default size rather than leaving it parked
-    off screen where it can't be found. Guarded, because a thread that dies here
-    takes its traceback to a stderr that doesn't exist under pythonw and leaves
-    exactly the parked window it was written to rescue."""
+    """If the fit never reports back - a script error, a webview that didn't run it
+    - show the panel at its current size rather than leave it hidden where it
+    can't be found. Guarded, because a thread that dies here takes its traceback
+    to a stderr that doesn't exist under pythonw and leaves exactly the hidden
+    window it was written to rescue."""
     try:
-        time.sleep(1.5)
+        time.sleep(SETTINGS_FAILSAFE_S)
         if not _SETTINGS_OPEN:
             return   # closed again already; don't force it back on screen
         u = EMBED_STATE.get("user32") or USER32
         hwnd = u.FindWindowW(None, TITLE_SETTINGS)
-        if not hwnd:
+        if not hwnd or u.IsWindowVisible(hwnd):
             return
         r = wt.RECT()
-        if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left <= SETTINGS_OFFSCREEN // 2:
+        if u.GetWindowRect(hwnd, ctypes.byref(r)):
             _place_settings(u, hwnd, r.right - r.left, r.bottom - r.top)
     except Exception:
         pass
 
 
 def _close_settings():
-    """Park the settings panel off screen if it's currently shown. True if it was.
+    """Hide the settings panel if it's currently shown. True if it was.
 
-    Parks rather than destroys: the panel is created once at startup (like the
+    Hides rather than destroys: the panel is created once at startup (like the
     hover popup and away report) and reused, not recreated per open. A window
     created fresh well after webview.start() - the old behavior here - is the
     one thing that reliably failed to ever paint any content on at least one
@@ -2043,96 +2110,44 @@ def _close_settings():
     every open/close sidesteps whatever that was, without needing to know its
     exact cause on a machine this can't be reproduced on.
 
-    Whether it's "open" is tracked here, not read back from the window's own
-    position: the page's own JS re-fits (and so re-shows) itself any time
-    loadConfig() runs, including its first load at startup, asynchronously and
-    on its own schedule - polling the window's rect at the moment of a click
-    raced against that and could see either state regardless of what was
-    actually intended."""
+    Whether it's "open" is tracked here, not read back from the window: the
+    page's own JS re-fits itself any time loadConfig() runs, asynchronously and
+    on its own schedule, and polling the window at the moment of a click raced
+    against that."""
     global _SETTINGS_OPEN
     if not _SETTINGS_OPEN:
         return False
     _SETTINGS_OPEN = False
     u = USER32
     hwnd = u.FindWindowW(None, TITLE_SETTINGS)
-    if not hwnd:
-        return True
-    r = wt.RECT()
-    if u.GetWindowRect(hwnd, ctypes.byref(r)):
-        w, h = r.right - r.left, r.bottom - r.top
-    else:
-        # GetWindowRect failing on a hwnd FindWindowW just found is rare, but
-        # skipping the park entirely here would leave a window this function
-        # already reports as closed still sitting on screen. Fall back to the
-        # size it's created at rather than trust nothing at all.
-        scale = EMBED_STATE.get("scale", 1.0)
-        w, h = int(360 * scale), int(480 * scale)
-    _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.MoveWindow(hwnd, SETTINGS_OFFSCREEN, 0, w, h, True))
+    if hwnd:
+        _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.ShowWindow(hwnd, SW_HIDE))
     return True
 
 
 def _create_settings_window():
-    """Create the settings panel, parked off screen (see _close_settings for
-    why parked rather than destroyed between uses). Called once at startup,
-    and again from _open_settings() as a fallback if the persistent window is
-    ever lost - its WinForms control disposed by some other failure, seen live
-    under heavy synthetic stress (window churn plus rapid toggling triggered a
-    .NET InvalidAsynchronousStateException). Recreating here means a lost
-    window self-heals on the next gear click instead of leaving it permanently
-    doing nothing until the app is restarted - the persistent-reuse design
-    fixed content that never painted on a real machine, but on its own gave
-    up its one fallback for "the window is just gone" that the old
-    create-fresh-every-time version had for free."""
+    """Create the settings panel, hidden (see _close_settings for why hidden
+    rather than destroyed between uses). Called once at startup, and again from
+    _open_settings() as a fallback if the persistent window is ever lost - its
+    WinForms control disposed by some other failure, seen live under heavy
+    synthetic stress (window churn plus rapid toggling triggered a .NET
+    InvalidAsynchronousStateException). Recreating here means a lost window
+    self-heals on the next gear click instead of leaving it permanently doing
+    nothing until the app is restarted.
+
+    Born hidden (pywebview's hidden=True: shown once at opacity 0 and hidden
+    again, so WebView2 initialises and the page loads while nothing is on
+    screen). Earlier versions created it visible, parked at x=-32000, and hid
+    and re-showed it to drop its taskbar button; a window that was never shown
+    needs none of that, and cannot appear at launch. Its tool-window style is
+    applied by _place_settings on the way to its first show."""
     global _SETTINGS_UID
     win = webview.create_window(
         TITLE_SETTINGS, html=SETTINGS_HTML, js_api=SettingsApi(),
-        width=360, height=480, x=SETTINGS_OFFSCREEN, y=0, resizable=True, on_top=True,
+        width=360, height=480, hidden=True, resizable=True, on_top=True,
         background_color="#12161c",
     )
     _SETTINGS_UID = win.uid
-
-    def _drop_taskbar_entry():
-        # Parked off screen but still a genuinely visible top-level window (not
-        # hidden=True - see the docstring above for why), so without this it
-        # carries an ordinary taskbar button for its entire off-screen-parked
-        # life, not just while actually open - a "ghost" icon with nothing
-        # visible behind it, found live. Mirrors the same tool-window
-        # treatment _overlay() already applies to the bar itself. Safe to
-        # briefly hide here specifically because it happens before this
-        # window has ever been opened for real: at the STARTUP call site,
-        # _SETTINGS_OPEN is still False, so the page's own first fitWindow()
-        # measurement is a no-op regardless (see _fit_settings). This is also
-        # called again as a self-heal fallback if the window was lost and
-        # rebuilt mid-session, where that assumption doesn't hold - _do()
-        # re-checks the window's actual position for that case.
-        u = USER32
-        hwnd = 0
-        for _ in range(30):
-            hwnd = u.FindWindowW(None, TITLE_SETTINGS)
-            if hwnd:
-                break
-            time.sleep(0.1)
-        if not hwnd:
-            return
-
-        def _do():
-            # A self-heal recreate can race a genuine, already-visible open (the
-            # panel the user asked for lands on screen before this fires). Hiding
-            # and reshowing it then would flicker a panel someone is actively
-            # looking at, just to fix a cosmetic ghost taskbar entry - skip it;
-            # the ghost icon outlives this one abnormal recreate, nothing more.
-            r = wt.RECT()
-            if u.GetWindowRect(hwnd, ctypes.byref(r)) and r.left > SETTINGS_OFFSCREEN // 2:
-                return
-            GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x80, 0x40000
-            ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            ex = (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
-            u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
-            u.ShowWindow(hwnd, 0)    # SW_HIDE
-            u.ShowWindow(hwnd, 8)    # SW_SHOWNA: re-show without activating or stealing focus
-        _invoke_on_ui_thread(_SETTINGS_UID, _do)
-
-    threading.Thread(target=_drop_taskbar_entry, daemon=True).start()
     return win
 
 
@@ -2154,8 +2169,9 @@ def _open_settings():
     # Refresh content before showing: this window is reused across opens, not
     # recreated, so whatever it displayed last time (an old CSV logging state,
     # a config saved from a previous open) would otherwise still be showing.
-    # fitWindow() -> Api.fit() -> _fit_settings() brings it back on screen at
-    # the right size, the same path a fresh page load already used.
+    # loadConfig() ends in fitWindow() -> Api.fit() -> _fit_settings(), which
+    # sizes the panel to its content and shows it, the same path a fresh page
+    # load already used.
     for w in webview.windows:
         if w.title == TITLE_SETTINGS:
             try:
@@ -2255,7 +2271,17 @@ def _diag():
         notify = u.FindWindowExW(tray, None, "TrayNotifyWnd", None)
         rebar = u.FindWindowExW(tray, None, "ReBarWindow32", None)
         print("  TrayNotifyWnd :", _rect(u, notify) if notify else "not found (use taskbar right edge)")
-        print("  ReBarWindow32 :", _rect(u, rebar) if rebar else "not found (Win11: 30% heuristic)")
+        print("  ReBarWindow32 :", _rect(u, rebar) if rebar else "not found")
+    items = taskbargap.taskbar_items()
+    if items:
+        # What the Windows 11 taskbar actually draws, from its UI Automation tree:
+        # the gap is a span between these, so they're the evidence for it.
+        print("  drawn buttons : %d via UI Automation, x %d..%d; last three: %s"
+              % (len(items), items[0][0], items[-1][2],
+                 ", ".join("%d..%d" % (i[0], i[2]) for i in items[-3:])))
+    else:
+        print("  drawn buttons : no UI Automation reading (not a Win11 XAML taskbar, "
+              "or Explorer not answering) - legacy windows decide")
     gap = taskbargap.find_gap()
     if gap:
         print("  gap (taskbargap): x %d..%d (%d px wide) at y=%d, scale %.2f, measured=%s"
@@ -2339,10 +2365,13 @@ def _run():
     if DOCK == "taskbar":
         gap = taskbargap.find_gap()
         if gap:
+            # Created at the gap's own span (never wider: that is what used to
+            # cover buttons at launch, a fixed 600px minimum on a gap that could
+            # be narrower) and hidden; _overlay()/_place() size it to its
+            # content and show it once the page reports what it needs.
             height = gap.height                      # fill the taskbar row
-            x_phys = gap.left + 12
-            width = max(600, (gap.right - 20) - x_phys)  # span the empty gap
-            y_phys = gap.top
+            x_phys, y_phys = gap.left, gap.top
+            width = max(gap.width, BAR_MIN_PX)
             scale = gap.scale     # the taskbar's own monitor, not just the primary's
             embed_args = (gap.left, gap.right, gap.top, height, scale, gap.measured)
     if DOCK != "taskbar" or embed_args is None:
@@ -2350,13 +2379,17 @@ def _run():
         width, height = right - left, BAR_HEIGHT
         x_phys, y_phys = (left, bottom - height) if DOCK == "bottom" else (left, top)
 
-    # pywebview/WinForms scales window POSITION by the DPI factor, so pass DIPs
+    # pywebview/WinForms scales window position AND size by the DPI factor
+    # (winforms.py multiplies width/height/x/y by the window's scale), so pass
+    # all four in logical px. Size used to be passed in physical px, which made
+    # the bar 175% too big on a 175% display until the first re-fit.
     x, y = round(x_phys / scale), round(y_phys / scale)
     api = Api()
     bar = webview.create_window(
         TITLE_BAR, html=HTML, js_api=api,
-        width=width, height=height, x=x, y=y,
+        width=max(round(width / scale), 100), height=max(round(height / scale), 1), x=x, y=y,
         min_size=(100, 1),      # allow a very thin bar (default min is 100 tall)
+        hidden=embed_args is not None,   # shown by _place() at its content width
         frameless=True, on_top=True, resizable=True, easy_drag=True,
         background_color="#0b0f14",
     )

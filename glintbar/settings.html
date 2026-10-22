@@ -194,7 +194,11 @@ async function loadConfig(){
     renderAll();
   }catch(e){}
   await refreshLog();
-  requestAnimationFrame(()=> requestAnimationFrame(fitWindow));   // size to content, above the bar
+  // Synchronous on purpose: reading scrollHeight forces layout, and this window
+  // is hidden until fit() shows it - Chromium runs no animation frames in a
+  // hidden window, so a requestAnimationFrame here never fired and the panel
+  // only ever appeared through the 1.5s failsafe.
+  fitWindow();   // size to content, above the bar
 }
 if (window.pywebview) loadConfig();
 window.addEventListener("pywebviewready", loadConfig);

@@ -16,6 +16,10 @@ first (see the README) rather than pile on features.
   moving your other tiles, plus an optional beep. Toggle in settings.
 - Placement watcher that keeps the bar fitted to the gap and on top as apps open
   and close or Explorer restarts.
+- Gap measured from the buttons Windows 11 actually draws (via `taskbargap` 0.2,
+  which reads the taskbar's UI Automation tree), so the bar never covers an app
+  button or the Widgets button; tiles scroll sideways under the mouse when the
+  gap is shorter than the bar, instead of the bar growing over the taskbar.
 - Hides while a fullscreen app (video, game, slideshow) is on the same screen.
 - Away watch: while you're away (screen locked, or idle past a threshold) it
   records which process is behind a busy machine and shows a summary (plus

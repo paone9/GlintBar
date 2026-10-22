@@ -376,3 +376,55 @@ def test_fs_streaks_shows_after_one_confirming_tick_not_the_full_hide_hold():
     should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
         False, None, 100.0, 100.0 + gm.FS_CLEAR_HOLD_S)
     assert should_show is True
+
+
+# --- _bar_geometry: the one rule that keeps the bar off the taskbar's buttons ---
+
+# The live Windows 11 layout this was built against: 3840 wide at 175%, gap
+# 1405..3075 between the last app button and the Widgets button (taskbargap 0.2,
+# measured through UI Automation).
+GAP_L, GAP_R, SCALE = 1405, 3075, 1.75
+
+
+def _inside(geo, left=GAP_L, right=GAP_R):
+    x, w = geo
+    return left <= x and x + w <= right
+
+
+def test_bar_geometry_fits_content_inside_the_gap():
+    geo = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, 400, "right")
+    assert geo is not None and _inside(geo)
+    x, w = geo
+    assert w == round(400 * SCALE) + 6
+    assert x + w == GAP_R - round(gm.BAR_EDGE_MARGIN_PX * SCALE)   # right-aligned, with margin
+
+
+def test_bar_geometry_never_widens_past_the_gap_however_much_the_page_asks():
+    for css in (900, 1200, 5000):
+        geo = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, css, "right")
+        assert geo is not None and _inside(geo), css
+
+
+def test_bar_geometry_fills_the_gap_when_the_page_has_not_reported_yet():
+    geo = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, None, "right")
+    assert geo is not None and _inside(geo)
+    assert geo[1] == (GAP_R - GAP_L) - 2 * round(gm.BAR_EDGE_MARGIN_PX * SCALE)
+
+
+def test_bar_geometry_yields_rather_than_squeeze_below_the_minimum():
+    assert gm._bar_geometry(1000, 1000 + gm.BAR_MIN_PX + 13, 1.75, True, 400, "right") is None
+    geo = gm._bar_geometry(1000, 1000 + gm.BAR_MIN_PX + 14, 1.75, True, 400, "right")
+    assert geo is not None and geo[1] == gm.BAR_MIN_PX
+
+
+def test_bar_geometry_claims_less_of_an_unmeasured_gap_and_anchors_right():
+    measured = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, 2000, "left")
+    guessed = gm._bar_geometry(GAP_L, GAP_R, SCALE, False, 2000, "left")
+    assert measured[0] == GAP_L + round(gm.BAR_EDGE_MARGIN_PX * SCALE)     # left, as configured
+    assert guessed[0] + guessed[1] == GAP_R - round(gm.BAR_EDGE_MARGIN_PX * SCALE)   # forced right
+    assert guessed[1] == measured[1] - round(gm.UNMEASURED_GAP_MARGIN_PX * SCALE)
+
+
+def test_bar_geometry_centres_inside_the_gap():
+    x, w = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, 300, "center")
+    assert abs((x - GAP_L) - (GAP_R - (x + w))) <= 1

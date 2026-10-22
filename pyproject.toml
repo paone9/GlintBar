@@ -27,7 +27,9 @@ dependencies = [
     # documents its own API can change between 0.x minor releases - a bare floor
     # would silently accept a future breaking release on every new install, while
     # this machine and any warm-cache install kept working. Pin the minor.
-    "taskbargap~=0.1.0",
+    # 0.2 is required: it measures the Windows 11 taskbar through UI Automation
+    # (so the bar never sits on the Widgets button) and adds taskbar_items().
+    "taskbargap~=0.2.0",
 ]
 
 [project.optional-dependencies]

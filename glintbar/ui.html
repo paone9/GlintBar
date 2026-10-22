@@ -16,7 +16,21 @@
   #grip{ flex:0 0 auto; color:var(--dim); font-size:11px; padding:0 5px;
          cursor:move; letter-spacing:-1px; }
   body.embedded #grip{ display:none; }
-  #chips{ flex:0 0 auto; display:flex; align-items:center; min-width:0; }
+  /* The chips are the one part of the bar allowed to be narrower than its
+     content: when the taskbar gap can't hold every tile, they scroll sideways
+     (pointer position drives it, see trackScroll) instead of the bar widening
+     over the taskbar's buttons. Everything else - alerts, the recording dot,
+     the controls - keeps its full width and stays reachable. */
+  #chipwrap{ flex:0 1 auto; min-width:0; height:100%; position:relative; }
+  #chips{ display:flex; align-items:center; height:100%; overflow-x:auto; overflow-y:hidden;
+          scrollbar-width:none; }
+  #chips::-webkit-scrollbar{ display:none; }
+  /* edge fades: the cue that there is more to the side */
+  #chipwrap::before, #chipwrap::after{ content:""; position:absolute; top:0; bottom:0; width:22px;
+          pointer-events:none; opacity:0; transition:opacity .15s; }
+  #chipwrap::before{ left:0; background:linear-gradient(90deg, var(--bg), transparent); }
+  #chipwrap::after{ right:0; background:linear-gradient(270deg, var(--bg), transparent); }
+  #chipwrap.more-left::before, #chipwrap.more-right::after{ opacity:1; }
   .chip{ flex:0 0 auto; display:flex; align-items:center; gap:5px;
          padding:0 var(--pad); height:100%; white-space:nowrap;
          border-right:1px solid var(--line); }
@@ -32,13 +46,7 @@
     box-shadow:inset 2px 0 0 var(--crit); animation:alertpulse 1.4s ease-in-out infinite; }
   .chip.alert .ic{ color:var(--crit); font-size:12px; }
   @keyframes alertpulse{ 0%,100%{ background:#f8514922; } 50%{ background:#f8514936; } }
-  /* sticky, not absolute: keeps its normal-flow footprint (so #bar's scrollWidth
-     still reports the true full-content width for auto-fit sizing) while visually
-     pinning to the window's real right edge once the window is forced narrower
-     than the content - the only way to reach Settings/Close, so it must never be
-     the part that silently renders off the edge of a too-narrow window. */
-  #ctl{ flex:0 0 auto; position:sticky; right:2px; z-index:1; background:var(--bg);
-        display:flex; align-items:center; gap:2px; padding:0 4px 0 6px; }
+  #ctl{ flex:0 0 auto; display:flex; align-items:center; gap:2px; padding:0 4px 0 6px; }
   #ctl button{ background:transparent; color:var(--dim); border:none; font-size:12px;
                cursor:pointer; padding:3px 5px; border-radius:3px; line-height:1; }
   #ctl button:hover{ color:var(--text); background:#ffffff14; }
@@ -51,7 +59,7 @@
 
 <div id="bar">
   <div id="grip" class="pywebview-drag-region" title="Drag to move">⋮⋮</div>
-  <div id="chips"></div>
+  <div id="chipwrap"><div id="chips"></div></div>
   <div id="alerts"></div>
   <div id="recdot" title="Recording CSV"></div>
   <div id="ctl">
@@ -131,36 +139,76 @@ function spark(cv,data,m,colr){
   ctx.lineTo((n-1)*sx,h); ctx.lineTo(0,h); ctx.closePath(); ctx.fillStyle=colr+"22"; ctx.fill();
 }
 
-function neededWidthCss(){
-  // Measured from #ctl's last non-sticky sibling, not from #ctl itself.
-  // Two things were tried here first and both broke under real testing:
-  //   - getBoundingClientRect() on #ctl: reports its current PAINTED
-  //     position, which while stuck (see #ctl's CSS) is clamped to wherever
-  //     the window's edge currently is - not the true content width.
-  //   - offsetLeft/offsetWidth on #ctl: assumed to read the untouched layout
-  //     box regardless of the sticky paint offset, the way position:relative
-  //     elements do. Verified directly that this assumption is WRONG for
-  //     position:sticky once actually stuck: offsetLeft returns the same
-  //     clamped, stuck-visual position as getBoundingClientRect() - so this
-  //     "fix" could never detect real overflow at all, which is exactly why
-  //     a truncated alert tile never got hidden by the fix meant to hide it.
-  // A plain (non-sticky) sibling's own offsetLeft/offsetWidth genuinely is
-  // unaffected by #ctl's sticky state, since sticky only repaints the sticky
-  // element itself - it doesn't touch how earlier siblings are laid out.
-  // Walk back from #ctl to whichever sibling is actually in flow (skipping
-  // display:none ones like #recdot when not logging) and add #ctl's own
-  // offsetWidth, which - being a plain measurement of #ctl's own box, not
-  // its position - is accurate regardless of stuck state.
-  const ctl = document.getElementById("ctl");
-  let prev = ctl.previousElementSibling;
-  while (prev && getComputedStyle(prev).display === "none") prev = prev.previousElementSibling;
-  const prevEnd = prev ? (prev.offsetLeft + prev.offsetWidth) : 0;
-  return Math.ceil(prevEnd + ctl.offsetWidth) + 3;
+const wrapEl = document.getElementById("chipwrap");
+const ctlEl = document.getElementById("ctl");
+const recEl = document.getElementById("recdot");
+const gripEl = document.getElementById("grip");
+
+// Width of everything that never shrinks: grip (floating mode only), the alert
+// tile(s), the recording dot, the controls, #bar's own padding. #chips is left
+// out because it is the part that gives way (scrolls) when the gap is short.
+function fixedWidthCss(){
+  const w = el => (getComputedStyle(el).display === "none") ? 0 : el.offsetWidth;
+  return w(gripEl) + w(alertsEl) + w(recEl) + ctlEl.offsetWidth + 4;
 }
+
+// What the bar needs to show every tile without scrolling. #chips.scrollWidth is
+// its full content width whatever the window currently allows - the window may
+// well be narrower than this, and that is fine: Python grants what the gap can
+// hold and the chips scroll for the rest.
+function neededWidthCss(){
+  return Math.ceil(chipsEl.scrollWidth + fixedWidthCss()) + 3;
+}
+
+// --- side-scrolling chips, driven by the pointer --------------------------
+// When the chips overflow, the pointer's position across them maps onto the
+// scroll range: at the left edge you see the start, at the right edge the end,
+// eased so entering mid-way glides rather than jumps. Wheel works too. Nothing
+// is clipped silently: the fades say there is more, moving the mouse shows it.
+let scrollTarget = null, scrollAnim = 0;
+function overflowPx(){ return chipsEl.scrollWidth - chipsEl.clientWidth; }
+function updateFades(){
+  const over = overflowPx() > 1;
+  wrapEl.classList.toggle("more-left", over && chipsEl.scrollLeft > 1);
+  wrapEl.classList.toggle("more-right", over && chipsEl.scrollLeft < overflowPx() - 1);
+}
+function animateScroll(){
+  scrollAnim = 0;
+  if (scrollTarget == null) return;
+  const before = chipsEl.scrollLeft, d = scrollTarget - before;
+  // Snap inside one CSS px, and stop if a step made no progress: scrollLeft is
+  // quantised to device pixels (0.57 CSS px at 175%), so a smaller threshold
+  // left the loop re-arming every frame 0.7px short of the edge, with the
+  // edge fade stuck on. Found by the browser check, not by eye.
+  if (Math.abs(d) >= 1) chipsEl.scrollLeft = before + d * 0.25;
+  if (Math.abs(d) < 1 || chipsEl.scrollLeft === before){
+    chipsEl.scrollLeft = scrollTarget; scrollTarget = null; updateFades(); return;
+  }
+  scrollAnim = requestAnimationFrame(animateScroll);
+}
+function trackScroll(e){
+  const over = overflowPx();
+  if (over <= 1) return;
+  const r = chipsEl.getBoundingClientRect();
+  const edge = Math.min(28, r.width / 4);            // dead zone at each end: easy to park
+  const t = Math.max(0, Math.min(1, (e.clientX - r.left - edge) / Math.max(1, r.width - 2 * edge)));
+  scrollTarget = t * over;
+  if (!scrollAnim) scrollAnim = requestAnimationFrame(animateScroll);
+}
+chipsEl.addEventListener("mousemove", trackScroll);
+chipsEl.addEventListener("wheel", e => {
+  if (overflowPx() <= 1) return;
+  scrollTarget = null;
+  chipsEl.scrollLeft += (e.deltaX || e.deltaY);
+  e.preventDefault();
+}, {passive:false});
+chipsEl.addEventListener("scroll", updateFades);
+window.addEventListener("resize", updateFades);
 
 const alertsEl = document.getElementById("alerts");
 const CRIT = {}; for (const id in META) if (META[id].crit < 1e8) CRIT[id] = META[id].crit;
-let alertState = {}, alertKey = "";
+let alertState = {}, alertKey = "", alertNaturalW = 0;
+const MIN_CHIP_STRIP_CSS = 120;   // keep at least this much of the chips visible before shedding an alert
 
 // Additive critical alert: a tile appears only on a sustained critical breach,
 // stays through a hysteresis/cooldown, and never displaces your chosen tiles.
@@ -227,30 +275,30 @@ async function tick(){
     // safety net: if the window drifted much wider than its content, re-fit
     if(!sizePending && window.innerWidth - neededWidthCss() > 120) sizePending = true;
     if(sizePending){
-      requestAnimationFrame(()=> requestAnimationFrame(async ()=>{   // let layout settle
+      // setTimeout, not requestAnimationFrame: the bar is born hidden and is
+      // first shown by this very request, and Chromium does not run animation
+      // frames in a hidden window - a rAF here would wait for a show that is
+      // waiting for it. Reading offsetWidth/scrollWidth forces layout anyway.
+      setTimeout(async ()=>{
         const ok = await window.pywebview.api.request_size(neededWidthCss());
         if(ok) sizePending = false;
-      }));
+        updateFades();
+      }, 0);
     }
-    // The gap can be too tight to grant the full width the content needs (a
-    // busy taskbar, an alert that just appeared). #ctl's sticky pin (see its
-    // CSS) then paints over whatever chip lands in the reclaimed space -
-    // alerts, being last before #ctl, most often - which can leave its icon
-    // showing with its label and value silently painted over. Hide the whole
-    // alert tile in that case rather than show a warning with no label:
-    // alerts are already additive/automatic, safe to drop under space
-    // pressure, unlike a metric you chose to show.
-    //
-    // visibility, not display: display:none pulls the alert out of layout,
-    // which shifts ctl.offsetLeft left, which shrinks neededWidthCss() (it's
-    // derived from ctl's position) - so hiding it can make the very check
-    // that decided to hide it flip back to "fits now" one tick later. Found
-    // live: the alert flickering on/off once a second, caught mid-"on" still
-    // half-covered. visibility:hidden keeps the layout box (and so ctl's
-    // position, and neededWidthCss()'s result) exactly as if it were shown,
-    // while rendering nothing - the decision no longer depends on its own
-    // last answer.
-    alertsEl.style.visibility = (neededWidthCss() > window.innerWidth + 1) ? "hidden" : "";
+    // The gap can be too tight for everything (a busy taskbar, an alert that
+    // just appeared). The chips give way by scrolling; the alert tile does not
+    // shrink, so on a bar too narrow to show it alongside a useful strip of
+    // chips, drop it rather than leave a strip of chips too short to read:
+    // alerts are additive and automatic, safe to shed under space pressure,
+    // unlike a metric you chose to show. Decided from the alert's own natural
+    // width, measured while displayed, so hiding it cannot change the number
+    // the decision is made from (an earlier version measured layout after
+    // hiding and flickered on/off once a second).
+    if (alertsEl.childElementCount){
+      if (alertsEl.style.display !== "none") alertNaturalW = alertsEl.offsetWidth;
+      const room = window.innerWidth - (fixedWidthCss() - (alertsEl.style.display === "none" ? 0 : alertNaturalW));
+      alertsEl.style.display = (room - alertNaturalW < MIN_CHIP_STRIP_CSS) ? "none" : "";
+    }
   }
 }
 
