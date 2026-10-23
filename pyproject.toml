@@ -37,7 +37,7 @@ dependencies = [
 # dependency source for the whole project: `pip install .[dev]`, no separate
 # requirements files.
 dev = [
-    "ruff==0.15.22",
+    "ruff==0.17.2",
     "bandit==1.9.4",
     "pytest==9.1.1",
 ]
@@ -56,3 +56,10 @@ packages = ["glintbar"]
 
 [tool.setuptools.package-data]
 glintbar = ["*.html"]
+
+[tool.ruff.lint]
+# Broad catches are policy here, not oversight: a monitor that dies because one
+# sensor, driver or Win32 call failed is worse than a tile that shows nothing.
+# A failed read leaves that reading missing; the rest of the bar keeps going.
+# (bandit's matching check, B110, is low severity and below the CI threshold.)
+extend-ignore = ["BLE001", "S110"]

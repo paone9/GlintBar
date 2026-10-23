@@ -4,7 +4,15 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # One PR for all action bumps. Ungrouped, Dependabot treats
+      # github/codeql-action/init and .../analyze as separate actions and opens a
+      # PR for each - merge one and the workflow runs mismatched versions of the
+      # same action. That is what left two CodeQL PRs here permanently red.
+      actions:
+        patterns: ["*"]

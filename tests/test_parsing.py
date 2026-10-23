@@ -11,7 +11,6 @@ import types
 
 import glintbar.monitor as gm
 
-
 # --- NvidiaProvider.sample: the poll throttle must survive a failing GPU ---
 
 def test_nvidia_keeps_throttling_when_the_gpu_is_failing(monkeypatch):
@@ -353,7 +352,7 @@ def test_fs_streaks_covering_builds_hide_streak_and_clears_clear_streak():
 
 
 def test_fs_streaks_hides_once_hide_hold_elapses():
-    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+    should_hide, _should_show, _fs_since, clear_since = gm._fs_streaks(
         True, 100.0, None, 100.0 + gm.FS_HIDE_HOLD_S)
     assert should_hide is True
     assert clear_since is None
@@ -373,7 +372,7 @@ def test_fs_streaks_shows_after_one_confirming_tick_not_the_full_hide_hold():
     # FS_CLEAR_HOLD_S is one tick, not FS_HIDE_HOLD_S's three - this is the
     # asymmetry the un-hide side is supposed to have
     assert gm.FS_CLEAR_HOLD_S < 1.0 < gm.FS_HIDE_HOLD_S
-    should_hide, should_show, fs_since, clear_since = gm._fs_streaks(
+    _should_hide, should_show, _fs_since, _clear_since = gm._fs_streaks(
         False, None, 100.0, 100.0 + gm.FS_CLEAR_HOLD_S)
     assert should_show is True
 

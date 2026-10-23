@@ -88,7 +88,8 @@ def _nv_num(x):
 def _nvidia_ok():
     try:
         o = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                           capture_output=True, text=True, timeout=5, creationflags=_NOWIN)
+                           capture_output=True, text=True, timeout=5, creationflags=_NOWIN,
+                           check=False)
         return o.returncode == 0 and o.stdout.strip() != ""
     except Exception:
         return False
@@ -127,7 +128,8 @@ class NvidiaProvider:
         try:
             o = subprocess.run(["nvidia-smi", "--query-gpu=" + ",".join(_NV_QUERY),
                                 "--format=csv,noheader,nounits"],
-                               capture_output=True, text=True, timeout=5, creationflags=_NOWIN)
+                               capture_output=True, text=True, timeout=5, creationflags=_NOWIN,
+                               check=False)
             line = o.stdout.strip().splitlines()[0]        # first GPU only
             p = [_nv_num(x) for x in line.split(",")]
             temp, util, mu, mt, power, clock = (p + [None] * 6)[:6]
@@ -221,7 +223,7 @@ class _PdhCounter:
 class PdhGpuProvider:
     """Cross-vendor GPU utilization via Windows performance counters."""
     kind = "generic"
-    metrics = ["gpu_util"]
+    metrics = ("gpu_util",)
 
     def __init__(self):
         self._c = _PdhCounter(r"\GPU Engine(*)\Utilization Percentage")
@@ -243,7 +245,7 @@ class PdhGpuProvider:
 class ThermalProvider:
     """System temperature from the ACPI thermal zone (no admin). A generic zone,
     not the exact CPU package sensor. For that, use LibreHardwareMonitor."""
-    metrics = ["sys_temp"]
+    metrics = ("sys_temp",)
 
     def __init__(self):
         self._c = _PdhCounter(r"\Thermal Zone Information(*)\Temperature")
@@ -295,7 +297,7 @@ class LhmProvider:
     fan controller through a signed kernel driver, which needs admin. GlintBar
     stays no-admin and just reads LHM's local web server (Options -> Remote Web
     Server, default port 8085). Tiles appear only when LHM is running."""
-    metrics = []
+    metrics = ()
 
     def __init__(self):
         self.url = "http://127.0.0.1:" + str(LHM_PORT) + "/data.json"
@@ -372,7 +374,7 @@ class HwinfoProvider:
     them in a shared-memory block. GlintBar stays no-admin and just reads it.
     Enable it in HWiNFO: Settings -> 'Shared Memory Support'. Tiles appear only
     when HWiNFO is running with that on."""
-    metrics = []
+    metrics = ()
 
     def __init__(self):
         self.ok = False
@@ -541,7 +543,7 @@ class Collector:
                 return self.logfile
             name = "glintbar_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv"
             self.logfile = os.path.join(LOG_DIR, name)
-            self._csv_fh = open(self.logfile, "w", newline="", encoding="utf-8")
+            self._csv_fh = open(self.logfile, "w", newline="", encoding="utf-8")  # noqa: SIM115 - held open until logging stops
             self._csv = csv.writer(self._csv_fh)
             self._csv.writerow(["timestamp"] + METRIC_IDS +
                                ["gpu_mem_used_mb", "gpu_mem_total_mb", "ram_used_gb"])
@@ -1120,7 +1122,7 @@ def _bar_geometry(gap_l, gap_r, scale, measured, css_width, align):
     # it like every other physical-pixel quantity keeps the margin visually
     # consistent across displays instead of shrinking away on the ones that
     # need it least.
-    margin = int(round(BAR_EDGE_MARGIN_PX * scale))
+    margin = round(BAR_EDGE_MARGIN_PX * scale)
     avail = gap_r - gap_l - 2 * margin
     if not measured:
         # taskbargap downgrades to measured=False when it has no UI Automation
@@ -1131,10 +1133,10 @@ def _bar_geometry(gap_l, gap_r, scale, measured, css_width, align):
         # roughly two button-widths. _effective_align already forces
         # right-alignment whenever unmeasured, so this narrows what the bar is
         # willing to claim rather than where it claims from.
-        avail -= int(round(UNMEASURED_GAP_MARGIN_PX * scale))
+        avail -= round(UNMEASURED_GAP_MARGIN_PX * scale)
     if avail < BAR_MIN_PX:
         return None
-    w = min(int(round(css_width * scale)) + 6, avail) if css_width else avail
+    w = min(round(css_width * scale) + 6, avail) if css_width else avail
     w = max(w, BAR_MIN_PX)           # avail >= BAR_MIN_PX here, so w <= avail: never over a button
     align = _effective_align(align, measured)
     if align == "left":
@@ -1292,7 +1294,7 @@ def _watcher():
                     # say "already handled" and leave it stranded over the fullscreen
                     # app.
                     if u.IsWindowVisible(st["hwnd"]):
-                        _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], 0))   # SW_HIDE
+                        _invoke_on_ui_thread(st.get("bar_uid"), lambda u=u, st=st: u.ShowWindow(st["hwnd"], 0))   # SW_HIDE
                         _hide_detail()
                     st["hidden_fs"] = True
                 continue
@@ -1305,10 +1307,10 @@ def _watcher():
             # a beat late is mild while hiding a beat late is the jarring case.
             if st.get("hidden_fs") and should_show:
                 st["hidden_fs"] = False
-                _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.ShowWindow(st["hwnd"], 5))   # SW_SHOW
+                _invoke_on_ui_thread(st.get("bar_uid"), lambda u=u, st=st: u.ShowWindow(st["hwnd"], 5))   # SW_SHOW
                 _place(st.get("last_css"))        # re-fit and re-assert topmost
             # normal upkeep: re-assert topmost and re-fit if the taskbar gap moved
-            _invoke_on_ui_thread(st.get("bar_uid"), lambda: u.SetWindowPos(
+            _invoke_on_ui_thread(st.get("bar_uid"), lambda u=u, st=st: u.SetWindowPos(
                 st["hwnd"], HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE_SIZE_ACT))
             gap = taskbargap.find_gap()
             if gap is None:
@@ -2068,7 +2070,7 @@ def _fit_settings(css_h):
     chrome_h = (wr.bottom - wr.top) - cr.bottom      # title bar + borders
     W = wr.right - wr.left
     screen_h = u.GetSystemMetrics(1)
-    H = min(int(round(css_h * scale)) + chrome_h + 2, int(screen_h * 0.92))
+    H = min(round(css_h * scale) + chrome_h + 2, int(screen_h * 0.92))
     _place_settings(u, hwnd, W, H)
     return True
 
@@ -2221,12 +2223,11 @@ def _diag_per_monitor_dpi(user32):
         scale = "?"
         try:
             if shcore.GetDpiForMonitor(hmon, 0, ctypes.byref(dx), ctypes.byref(dy)) == 0:
-                scale = "%.2fx" % (dx.value / 96.0)
+                scale = f"{dx.value / 96.0:.2f}x"
         except Exception:
             pass
         prim = " PRIMARY" if mi.dwFlags & 1 else ""
-        print("  monitor   : (%d,%d,%d,%d) scale %s%s"
-              % (m.left, m.top, m.right, m.bottom, scale, prim))
+        print(f"  monitor   : ({m.left},{m.top},{m.right},{m.bottom}) scale {scale}{prim}")
         return True
 
     user32.EnumDisplayMonitors(None, None, cb_t(_cb), 0)
@@ -2276,16 +2277,16 @@ def _diag():
     if items:
         # What the Windows 11 taskbar actually draws, from its UI Automation tree:
         # the gap is a span between these, so they're the evidence for it.
-        print("  drawn buttons : %d via UI Automation, x %d..%d; last three: %s"
-              % (len(items), items[0][0], items[-1][2],
-                 ", ".join("%d..%d" % (i[0], i[2]) for i in items[-3:])))
+        last3 = ", ".join(f"{i[0]}..{i[2]}" for i in items[-3:])
+        print(f"  drawn buttons : {len(items)} via UI Automation, "
+              f"x {items[0][0]}..{items[-1][2]}; last three: {last3}")
     else:
         print("  drawn buttons : no UI Automation reading (not a Win11 XAML taskbar, "
               "or Explorer not answering) - legacy windows decide")
     gap = taskbargap.find_gap()
     if gap:
-        print("  gap (taskbargap): x %d..%d (%d px wide) at y=%d, scale %.2f, measured=%s"
-              % (gap.left, gap.right, gap.width, gap.top, gap.scale, gap.measured))
+        print(f"  gap (taskbargap): x {gap.left}..{gap.right} ({gap.width} px wide) "
+              f"at y={gap.top}, scale {gap.scale:.2f}, measured={gap.measured}")
         print("  verdict       : would EMBED in the taskbar gap")
     else:
         print("  verdict       : would FALL BACK to a floating bar (no gap found)")
