@@ -1,3 +1,3 @@
 """GlintBar - a slim always-on-top hardware monitor for the Windows taskbar gap."""
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
