@@ -427,3 +427,13 @@ def test_bar_geometry_claims_less_of_an_unmeasured_gap_and_anchors_right():
 def test_bar_geometry_centres_inside_the_gap():
     x, w = gm._bar_geometry(GAP_L, GAP_R, SCALE, True, 300, "center")
     assert abs((x - GAP_L) - (GAP_R - (x + w))) <= 1
+
+
+# --- Collector.seq: the page's alert debounce counts samples, not polls ---
+
+def test_collector_seq_counts_published_samples_only():
+    c = gm.Collector()
+    before = c.snapshot()["seq"]
+    assert c.snapshot()["seq"] == before        # polling alone doesn't advance it
+    c.sample()
+    assert c.snapshot()["seq"] == before + 1

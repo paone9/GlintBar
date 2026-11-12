@@ -207,7 +207,7 @@ window.addEventListener("resize", updateFades);
 
 const alertsEl = document.getElementById("alerts");
 const CRIT = {}; for (const id in META) if (META[id].crit < 1e8) CRIT[id] = META[id].crit;
-let alertState = {}, alertKey = "", alertNaturalW = 0;
+let alertState = {}, alertKey = "", alertNaturalW = 0, alertSeq;
 const MIN_CHIP_STRIP_CSS = 120;   // keep at least this much of the chips visible before shedding an alert
 
 // Additive critical alert: a tile appears only on a sustained critical breach,
@@ -219,12 +219,19 @@ function updateAlerts(st){
     return;
   }
   const soundOn = st.config.sound !== false;
+  // The enter/clear holds below count samples (one a second), not calls: the
+  // page polls faster than that while the bar is starting up, and counting the
+  // same reading twice would let one spike raise an alert. If the state has
+  // no counter, every call counts.
+  const fresh = st.seq === undefined || st.seq !== alertSeq;
+  alertSeq = st.seq;
   const active = [];
   for (const id of AVAIL){
     const crit = CRIT[id]; if (crit == null) continue;
     const v = st.latest[id]; if (v == null) continue;
     let s = alertState[id] || {on:false, ec:0, cc:0};
-    if (!s.on){
+    if (!fresh){ /* same reading as last call: hold counters */ }
+    else if (!s.on){
       if (v >= crit){ if (++s.ec >= 2){ s.on = true; s.cc = 0;   // 2s sustained to enter
         if (soundOn){ try{ window.pywebview.api.beep(); }catch(e){} } } }
       else s.ec = 0;
@@ -305,5 +312,16 @@ async function tick(){
 document.getElementById("setBtn").onclick   = ()=> window.pywebview.api.open_settings();
 document.getElementById("closeBtn").onclick = ()=> window.pywebview.api.close();
 
-window.addEventListener("pywebviewready", ()=>{ tick(); setInterval(tick, 1000); });
+// The bar is born hidden and first shown by tick()'s request_size, which waits
+// for get_state to say the bar is embedded. At page load that is often a few
+// hundred ms away (the Python side is still attaching to the window), and on a
+// 1s cadence the first miss cost up to a second of a blank launch. So poll fast
+// until embedded, for at most 3s (a floating bar never embeds), then settle.
+window.addEventListener("pywebviewready", async ()=>{
+  for (let i = 0; i < 30 && !document.body.classList.contains("embedded"); i++){
+    await tick();
+    if (!document.body.classList.contains("embedded")) await new Promise(r => setTimeout(r, 100));
+  }
+  setInterval(tick, 1000);
+});
 </script>

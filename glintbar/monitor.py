@@ -168,17 +168,19 @@ class _PDH_ITEM(ctypes.Structure):
 
 _PDH_MORE, _PDH_DBL = 0x800007D2, 0x00000200
 _PDH = None
+_PDH_LOCK = threading.Lock()     # the hardware probes run concurrently at startup
 
 
 def _pdh_lib():
     global _PDH
-    if _PDH is None:
-        p = ctypes.windll.pdh
-        for fn in ("PdhOpenQueryW", "PdhAddEnglishCounterW",
-                   "PdhCollectQueryData", "PdhGetFormattedCounterArrayW"):
-            getattr(p, fn).restype = ctypes.c_uint32   # PDH_STATUS is unsigned
-        _PDH = p
-    return _PDH
+    with _PDH_LOCK:
+        if _PDH is None:
+            p = ctypes.windll.pdh
+            for fn in ("PdhOpenQueryW", "PdhAddEnglishCounterW",
+                       "PdhCollectQueryData", "PdhGetFormattedCounterArrayW"):
+                getattr(p, fn).restype = ctypes.c_uint32   # PDH_STATUS is unsigned
+            _PDH = p
+        return _PDH
 
 
 def _pdh_values(p, counter):
@@ -438,15 +440,61 @@ def _detect_gpu():
     return None
 
 
-GPU = _detect_gpu()
+def _sensor_provider():
+    # real CPU temp + fan RPM: prefer HWiNFO (shared memory), else LibreHardwareMonitor
+    s = HwinfoProvider()
+    return s if s.ok else LhmProvider()
+
+
+def _preload_gui():
+    """Load pythonnet and pywebview's WinForms backend now, so it overlaps the
+    hardware probes instead of following them. pywebview imports the same module
+    when the first window is created; done here, that import finds it loaded.
+    Skipped when PYWEBVIEW_GUI is set, because that module picks its renderer at
+    import time and an early import would not see the forced choice. A failure is
+    ignored here and raised again by pywebview, where main() reports it."""
+    if "PYWEBVIEW_GUI" in os.environ or "--diag" in sys.argv:
+        return
+    try:
+        import webview.platforms.winforms  # noqa: F401
+    except Exception:
+        pass
+
+
+def _detect_hardware():
+    """Probe GPU, thermal zone and CPU sensors concurrently.
+
+    Each probe mostly waits: the first PDH query in a process takes about a
+    second, and with LibreHardwareMonitor not running its loopback request waits
+    out its timeout, because Windows retries a connection to a closed localhost
+    port rather than refusing it. Run in sequence these were about 2s of every
+    launch before the first window was even created. Run side by side, with the
+    WinForms load alongside, startup waits for the slowest one only.
+    An exception in a probe is re-raised here, as it was when they ran inline."""
+    results, errors = {}, []
+
+    def run(key, fn):
+        try:
+            results[key] = fn()
+        except BaseException as e:      # re-raised on the importing thread below
+            errors.append(e)
+
+    jobs = [("gpu", _detect_gpu), ("thermal", ThermalProvider),
+            ("sensor", _sensor_provider), ("gui", _preload_gui)]
+    threads = [threading.Thread(target=run, args=j, daemon=True) for j in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise errors[0]
+    return results["gpu"], results["thermal"], results["sensor"]
+
+
+GPU, THERMAL, SENSOR = _detect_hardware()
 GPU_KIND = GPU.kind if GPU else "none"
 GPU_METRICS = GPU.metrics if GPU else []
-THERMAL = ThermalProvider()
 THERMAL_METRICS = THERMAL.metrics if THERMAL.ok else []
-# real CPU temp + fan RPM: prefer HWiNFO (shared memory), else LibreHardwareMonitor
-SENSOR = HwinfoProvider()
-if not SENSOR.ok:
-    SENSOR = LhmProvider()
 SENSOR_METRICS = SENSOR.metrics if SENSOR.ok else []
 AVAILABLE = [m for m in METRIC_IDS
              if m in BASE_METRICS or m in GPU_METRICS
@@ -525,6 +573,9 @@ class Collector:
                       for mid in METRIC_IDS}
         self.latest = {}
         self.extra = {}          # non-graphed display values (mem MB, ram GB)
+        # Counts published samples, so the page can tell a new reading from the
+        # same one polled twice (its alert debounce counts readings, not polls).
+        self.seq = 0
         # rate baselines
         self._net = psutil.net_io_counters()
         self._disk = psutil.disk_io_counters()
@@ -606,6 +657,7 @@ class Collector:
                     s["sum"] += v
                     s["n"] += 1
             self.latest = vals
+            self.seq += 1
             self.extra = {
                 "gpu_mem_used": gpu.get("gpu_mem_used"),
                 "gpu_mem_total": gpu.get("gpu_mem_total"),
@@ -624,7 +676,7 @@ class Collector:
 
     def snapshot(self):
         with self.lock:
-            out = {"latest": dict(self.latest), "extra": dict(self.extra),
+            out = {"latest": dict(self.latest), "extra": dict(self.extra), "seq": self.seq,
                    "hist": {m: list(self.hist[m]) for m in METRIC_IDS},
                    "stats": {}, "logging": self.logging,
                    "logfile": os.path.basename(self.logfile) if self.logfile else None}
