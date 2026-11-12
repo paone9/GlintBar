@@ -437,3 +437,33 @@ def test_collector_seq_counts_published_samples_only():
     assert c.snapshot()["seq"] == before        # polling alone doesn't advance it
     c.sample()
     assert c.snapshot()["seq"] == before + 1
+
+
+# --- _find_own_window: never act on another process's same-titled window ---
+
+class _FakeUser32:
+    """Top-level windows in z-order as (hwnd, title, pid), walked like FindWindowExW."""
+    def __init__(self, windows):
+        self.windows = windows
+
+    def FindWindowExW(self, _parent, after, _cls, title):
+        hit = [w for w in self.windows if w[1].lower() == title.lower()]   # case-insensitive, like Win32
+        hwnds = [w[0] for w in hit]
+        i = hwnds.index(after) + 1 if after else 0
+        return hwnds[i] if i < len(hwnds) else None
+
+    def GetWindowThreadProcessId(self, hwnd, pid_ref):
+        pid_ref._obj.value = next(w[2] for w in self.windows if w[0] == hwnd)
+        return 1
+
+
+def test_find_own_window_skips_other_processes(monkeypatch):
+    monkeypatch.setattr(gm.os, "getpid", lambda: 42)
+    u = _FakeUser32([(10, "glintbar", 7), (11, "GlintBar", 8), (12, "GlintBar", 42)])
+    assert gm._find_own_window(u, gm.TITLE_BAR) == 12
+
+
+def test_find_own_window_returns_zero_when_only_others_match(monkeypatch):
+    monkeypatch.setattr(gm.os, "getpid", lambda: 42)
+    u = _FakeUser32([(11, "GlintBar", 8)])
+    assert gm._find_own_window(u, gm.TITLE_BAR) == 0

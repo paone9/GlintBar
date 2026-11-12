@@ -68,7 +68,7 @@ glintbar</pre>
 </header>
 
 <div class="shot">
-  <img src="hero.png" alt="GlintBar in the Windows taskbar showing CPU, RAM, system temperature, GPU temperature, VRAM, GPU clock, power, disk and network tiles, each with a sparkline">
+  <img src="hero.png" alt="GlintBar in the Windows taskbar showing CPU, RAM, system temperature, GPU temperature, GPU load, VRAM, GPU clock, power, disk and network tiles, each with a sparkline">
   <p class="cap">Up to twelve metrics, each with a 60-second sparkline, in space the taskbar wasn't using.</p>
 </div>
 
@@ -113,7 +113,7 @@ glintbar</pre>
 </section>
 
 <div class="shot">
-  <img src="settings.png" alt="The GlintBar settings panel: choosing which metrics to show, bar size, alignment in the taskbar, sparklines, alerts and CSV logging">
+  <img src="settings.png" alt="The GlintBar settings panel: metric picks with Essentials / GPU focus / All presets, size, taskbar alignment, toggles for sparklines, alerts, sound and away watch, and CSV logging">
   <p class="cap">Pick your tiles, size and alignment. Optional per-second CSV logging for offline analysis.</p>
 </div>
 
@@ -126,7 +126,7 @@ glintbar</pre>
     <li><strong>An NVIDIA GPU</strong> for the full GPU set. AMD and Intel GPUs report load only; without a GPU those tiles are simply hidden.</li>
     <li><strong>HWiNFO or LibreHardwareMonitor</strong>, optionally, for true CPU package temperature and fan speed.</li>
   </ul>
-  <p>The only dependencies are <code>pywebview</code>, <code>psutil</code>, and
+  <p>The direct dependencies are <code>pywebview</code>, <code>psutil</code>, and
   <code>taskbargap</code>, installed for you. Configuration and logs live in
   <code>%LOCALAPPDATA%\GlintBar</code>, never in the install directory.</p>
 </section>

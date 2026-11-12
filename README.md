@@ -1,6 +1,6 @@
 # GlintBar
 
-![GlintBar sitting in the Windows taskbar: CPU, RAM, SYS, GPU, VRAM, clock, power, disk and network tiles with sparklines](https://raw.githubusercontent.com/paone9/GlintBar/main/docs/hero.png)
+![GlintBar sitting in the Windows taskbar: CPU, RAM, system temperature, GPU temperature, GPU load, VRAM, GPU clock, power, disk and network tiles with sparklines](https://raw.githubusercontent.com/paone9/GlintBar/main/docs/hero.png)
 
 [![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d6)](#supported-hardware-and-platforms)
 [![PyPI](https://img.shields.io/pypi/v/glintbar)](https://pypi.org/project/glintbar/)
@@ -94,9 +94,10 @@ appear on their own. HWiNFO is preferred if both are running.
 
 Python 3.10+ and the WebView2 runtime, which already ships with Windows 11;
 Windows 10 usually has it via Edge, but may need the free Evergreen runtime. No
-admin, no compiled binaries, just Python source. The only dependencies are
-`pywebview`, `psutil`, and `taskbargap` (taskbar-gap detection and placement,
-extracted from this project), installed automatically.
+admin needed. GlintBar itself is plain Python source with no compiled binaries of
+its own. Its direct dependencies are `pywebview`, `psutil`, and `taskbargap`
+(taskbar-gap detection and placement, extracted from this project), installed
+automatically; `psutil` and pywebview's `pythonnet` do ship compiled code.
 
 ## Install and run
 
@@ -137,7 +138,8 @@ so they survive reinstalls and stay out of the install folder.
 Open the gear to change:
 
 - Metrics: pick the ones you want, with presets for Essentials, GPU focus, or
-  All. The bar rebuilds and resizes to fit only what you keep.
+  All. The bar rebuilds and resizes to fit only what you keep, up to the width
+  of the taskbar gap; past that the tiles scroll.
 - Size: Compact, Normal, or Large.
 - Align: Left, Center, or Right within the taskbar gap.
 - Sparklines, critical alerts, alert sound, and away watch: on or off.
@@ -150,7 +152,7 @@ shortcut, default `"ctrl+alt+g"`, `""` to disable).
 
 ## Placement
 
-Set `DOCK` at the top of `glintbar/monitor.py`:
+Set `DOCK` in `glintbar/monitor.py`:
 
 - `"taskbar"` (default) floats a topmost bar over the empty part of the taskbar,
   between your app buttons and the system tray. It's a normal top-level window
@@ -171,8 +173,8 @@ It lives on your **primary monitor's** taskbar (the one Windows treats as
 primary), and expects that taskbar along the bottom. On a multi-monitor setup with
 different scaling per monitor it stays correctly placed and sized, since the app is
 per-monitor-DPI aware. Only one copy runs at a time; launching it again while it
-is open just exits without doing anything, so close the running bar first if you
-want to restart it. Letting you pick a different monitor is on the
+is open shows a message saying it's already running and starts nothing, so close
+the running bar first (✕ on the bar) if you want to restart it. Letting you pick a different monitor is on the
 [roadmap](ROADMAP.md).
 
 When a video, game, or slideshow goes fullscreen on the same screen, the bar
@@ -207,12 +209,20 @@ If you step away and the machine keeps working hard, GlintBar figures out what w
 responsible and tells you when you get back. It counts you as away as soon as the
 screen is locked, or after a few minutes with no keyboard or mouse activity. While
 you're away and the CPU stays high, it records which processes are behind it. When
-you return it shows a short summary (how long you were away, the peak CPU and
-temperature, and the busiest processes) and appends a line to `away.csv` in the
-logs folder. If nothing unusual happened, it stays quiet.
+you return, if you were counted as away for at least 5 minutes (so after an idle
+start, about 10 minutes since your last input), it shows a short summary (how long
+you were away, how much of it was busy, the peak CPU and temperature, how RAM
+moved, and the busiest processes) and appends a line to `away.csv` in the logs
+folder. The summary appears even when nothing stood out, so a quiet night reads as
+"nothing happened" rather than silence. The alert beep (if alert sound is on) is
+kept for absences that were notable: CPU busy or running hot for a sustained
+stretch, or memory that climbed and stayed high.
 
-Toggle it in settings. The idle delay and CPU threshold are in `config.json`
-(`away_after_min`, `away_cpu_pct`), defaulting to 5 minutes and 25%.
+Toggle it in settings. The thresholds are in `config.json`: `away_after_min`
+(idle minutes before you count as away, default 5), `away_cpu_pct` (busy at or above
+this CPU %, default 25), `away_hot_c` (hot at or above this °C, default 85), and
+`away_report_after_min` (minutes counted as away before a summary is worth
+showing, default 5).
 
 ## CSV logging
 
@@ -236,24 +246,32 @@ df.set_index("timestamp")[["gpu_temp", "gpu_clock", "gpu_power"]].plot()
   between, so the monitor itself stays cheap.
 - Thresholds live in the `META` map at the top of `glintbar/ui.html`, so they're
   easy to change.
+- `python -m glintbar --diag` prints what GlintBar detects on this machine
+  (Python and Windows versions, DPI, sensor providers, taskbar geometry and
+  timings) to the console and exits without starting the bar. It writes no
+  diagnostic file; like any launch, it creates the empty `%LOCALAPPDATA%\GlintBar`
+  folders if they don't exist yet.
 - Ideas that aren't built yet (attention rotation, anomaly detection, toast
   notifications, AMD/Intel temperatures) are written up in [ROADMAP.md](ROADMAP.md).
 
 ## Security
 
-GlintBar is meant to be easy to review. It's plain Python with no binaries and no
-obfuscation, it needs no admin, and it makes no internet connections: no
-telemetry, no update checks, nothing. The only network use is optional and local:
-reading LibreHardwareMonitor on `127.0.0.1` if you turn that integration on. It
-only reads system metrics and writes `config.json`, logs, and its WebView2
+GlintBar is meant to be easy to review. It's plain Python with no binaries of its
+own and no obfuscation, it needs no admin, and it makes no internet connections:
+no telemetry, no update checks, nothing. The only network use is local: when
+HWiNFO's shared memory isn't available, it checks once at startup for
+LibreHardwareMonitor on `127.0.0.1:8085` (or `GLINTBAR_LHM_PORT`), and keeps
+reading it only if it answers with CPU temperature or fan data. It only reads system metrics and writes `config.json`, logs, and its WebView2
 browser profile (kept persistent so it doesn't leak a fresh copy into `%TEMP%`
 on every launch) to `%LOCALAPPDATA%\GlintBar`.
 
-CI runs `ruff` and `bandit` on every push, and a `CodeQL` workflow runs semantic
-static analysis of the Python, the UI JavaScript, and the workflows themselves.
-GitHub Actions are pinned to commit SHAs. Dependabot keeps those and the pinned
-dev tools up to date; the three runtime dependencies sit at minimum-tested floors in
-`pyproject.toml`. An
+CI runs `ruff` and `bandit`, plus the unit tests on Windows (Python 3.10 and
+3.13), on every push to `main` and every pull request, and a `CodeQL` workflow runs
+semantic static analysis of the Python, the UI JavaScript, and the workflows
+themselves. GitHub Actions are pinned to commit SHAs. Dependabot keeps those and
+the pinned dev tools up to date. In `pyproject.toml`, `pywebview` and `psutil` sit
+at minimum-tested floors and `taskbargap` is pinned to its 0.2 minor (`~=0.2.0`),
+since a 0.x library may break its API between minors. An
 [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/paone9/GlintBar)
 grades the repo's security posture (badge above). See the repo's Security tab, and
 [SECURITY.md](SECURITY.md) for exactly what the app touches.

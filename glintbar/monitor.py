@@ -50,7 +50,7 @@ SAMPLE_INTERVAL = 1.0        # seconds
 HISTORY_LEN = 60             # sparkline window (seconds)
 
 # Window titles: brand-cased for display, and also the keys used to find each
-# window (FindWindow), so always reference these constants, never a bare string.
+# window (_find_own_window), so always reference these constants, never a bare string.
 TITLE_BAR = "GlintBar"
 TITLE_SETTINGS = "GlintBar settings"
 TITLE_DETAIL = "GlintBar detail"
@@ -884,6 +884,23 @@ _SHELL_PROCS = {
 _ENUM_PROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
+def _find_own_window(user32, title):
+    """Our own top-level window with this title, or 0. A bare FindWindow
+    matches any process's window, case-insensitively: another running GlintBar
+    or an Explorer window on a folder named "glintbar" would be moved, resized
+    and restyled as if it were ours."""
+    pid = os.getpid()
+    hwnd = None
+    while True:
+        hwnd = user32.FindWindowExW(None, hwnd, None, title)
+        if not hwnd:
+            return 0
+        owner = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            return hwnd
+
+
 def _is_cloaked(hwnd):
     """DWM-cloaked windows (background UWP frames) report visible but aren't shown;
     they must not count as the topmost real window on the screen."""
@@ -1250,7 +1267,7 @@ def _overlay(user32, gap_l, gap_r, top, height, scale, measured=False, bar_uid=N
     """Float our window over the empty taskbar gap as a topmost, input-owning bar."""
     hwnd = 0
     for _ in range(60):
-        hwnd = user32.FindWindowW(None, TITLE_BAR)
+        hwnd = _find_own_window(user32, TITLE_BAR)
         if hwnd:
             break
         time.sleep(0.1)
@@ -1649,7 +1666,7 @@ def _detail_hwnd(user32):
     # that would otherwise be cached forever and never looked up again.
     global _DETAIL_HWND
     if not _DETAIL_HWND or not user32.IsWindow(_DETAIL_HWND):
-        _DETAIL_HWND = user32.FindWindowW(None, TITLE_DETAIL)
+        _DETAIL_HWND = _find_own_window(user32, TITLE_DETAIL)
     return _DETAIL_HWND
 
 
@@ -1792,7 +1809,7 @@ def _create_away_window():
 
 
 def _away_hwnd(user32):
-    return user32.FindWindowW(None, TITLE_AWAY)
+    return _find_own_window(user32, TITLE_AWAY)
 
 
 AWAY_COLS = ["when", "away_min", "observed_min", "busy_min", "busy_pct", "typical_cpu",
@@ -2112,7 +2129,7 @@ def _fit_settings(css_h):
         return False
     st = EMBED_STATE
     u = st.get("user32") or USER32
-    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    hwnd = _find_own_window(u, TITLE_SETTINGS)
     if not hwnd:
         return False
     scale = st.get("scale", 1.0)
@@ -2141,7 +2158,7 @@ def _settings_failsafe():
         if not _SETTINGS_OPEN:
             return   # closed again already; don't force it back on screen
         u = EMBED_STATE.get("user32") or USER32
-        hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+        hwnd = _find_own_window(u, TITLE_SETTINGS)
         if not hwnd or u.IsWindowVisible(hwnd):
             return
         r = wt.RECT()
@@ -2173,7 +2190,7 @@ def _close_settings():
         return False
     _SETTINGS_OPEN = False
     u = USER32
-    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    hwnd = _find_own_window(u, TITLE_SETTINGS)
     if hwnd:
         _invoke_on_ui_thread(_SETTINGS_UID, lambda: u.ShowWindow(hwnd, SW_HIDE))
     return True
@@ -2212,7 +2229,7 @@ def _open_settings():
     if _close_settings():
         return
     u = USER32
-    hwnd = u.FindWindowW(None, TITLE_SETTINGS)
+    hwnd = _find_own_window(u, TITLE_SETTINGS)
     if not hwnd:
         _create_settings_window()
         # Give the fresh window a beat to finish its own initial page load
