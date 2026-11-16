@@ -43,7 +43,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/paone9/GlintBar"
+Homepage = "https://paone9.github.io/GlintBar/"
+Source = "https://github.com/paone9/GlintBar"
 Issues = "https://github.com/paone9/GlintBar/issues"
 
 # gui-scripts (not scripts) so the installed `glintbar` command launches with

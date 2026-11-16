@@ -17,6 +17,11 @@ raise an alert tile, and with clock and power on-screen you can catch a GPU cloc
 collapse or power dropout, the fingerprint of a driver hang, before it turns into
 a stutter or a crash.
 
+**Official channels:** [GitHub](https://github.com/paone9/GlintBar) ·
+[Website](https://paone9.github.io/GlintBar/) · [PyPI](https://pypi.org/project/glintbar/)
+
+GlintBar is open source under the MIT license. Contributions and forks are welcome.
+
 ## What it shows
 
 A single row of up to twelve metrics, each with a value and a 60-second sparkline.
